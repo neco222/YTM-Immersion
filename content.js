@@ -22,209 +22,6 @@
     let uploadMenuGlobalSetup = false;
     let deleteDialogGlobalSetup = false;
 
-    (function injectStyle() {
-        const id = 'ytm-immersion-style';
-        if (document.getElementById(id)) return;
-        const style = document.createElement('style');
-        style.id = id;
-        style.textContent = `
-            .ytm-upload-menu {
-                position: absolute;
-                bottom: 52px;
-                right: 0;
-                min-width: 240px;
-                padding: 8px;
-                border-radius: 18px;
-                background: rgba(15, 15, 20, 0.75);
-                box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
-                backdrop-filter: blur(22px) saturate(160%);
-                -webkit-backdrop-filter: blur(22px) saturate(160%);
-                border: 1px solid rgba(255, 255, 255, 0.16);
-                display: flex;
-                flex-direction: column;
-                gap: 4px;
-                z-index: 9999;
-                transform-origin: bottom right;
-                transform: translateY(6px) scale(0.96);
-                opacity: 0;
-                pointer-events: none;
-                transition: opacity 0.16s ease-out, transform 0.16s ease-out;
-            }
-            .ytm-upload-menu.visible {
-                opacity: 1;
-                transform: translateY(0) scale(1);
-                pointer-events: auto;
-            }
-            .ytm-upload-menu-title {
-                font-size: 12px;
-                opacity: 0.75;
-                padding: 4px 10px 6px;
-            }
-            .ytm-upload-menu-item {
-                border: none;
-                background: transparent;
-                color: #fff;
-                padding: 8px 10px;
-                font-size: 13px;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                border-radius: 12px;
-                cursor: pointer;
-                text-align: left;
-                width: 100%;
-            }
-            .ytm-upload-menu-item:hover {
-                background: rgba(255, 255, 255, 0.12);
-            }
-            .ytm-upload-menu-item-icon {
-                width: 20px;
-                display: inline-flex;
-                justify-content: center;
-                align-items: center;
-                opacity: 0.9;
-            }
-            .ytm-upload-menu-separator {
-                height: 1px;
-                margin: 4px 6px;
-                background: radial-gradient(circle at center, rgba(255,255,255,0.4), transparent);
-                opacity: 0.6;
-            }
-            .ytm-confirm-dialog {
-                position: absolute;
-                bottom: 52px;
-                right: 56px;
-                min-width: 260px;
-                padding: 10px 10px 8px;
-                border-radius: 18px;
-                background: rgba(15, 15, 20, 0.92);
-                box-shadow: 0 18px 40px rgba(0, 0, 0, 0.65);
-                backdrop-filter: blur(22px) saturate(160%);
-                -webkit-backdrop-filter: blur(22px) saturate(160%);
-                border: 1px solid rgba(255, 255, 255, 0.16);
-                z-index: 9999;
-                transform-origin: bottom right;
-                transform: translateY(6px) scale(0.96);
-                opacity: 0;
-                pointer-events: none;
-                transition: opacity 0.16s ease-out, transform 0.16s ease-out;
-            }
-            .ytm-confirm-dialog.visible {
-                opacity: 1;
-                transform: translateY(0) scale(1);
-                pointer-events: auto;
-            }
-            .ytm-confirm-title {
-                font-size: 13px;
-                font-weight: 600;
-                margin-bottom: 4px;
-            }
-            .ytm-confirm-message {
-                font-size: 12px;
-                opacity: 0.85;
-                margin-bottom: 10px;
-                line-height: 1.4;
-            }
-            .ytm-confirm-buttons {
-                display: flex;
-                justify-content: flex-end;
-                gap: 8px;
-            }
-            .ytm-confirm-btn {
-                border-radius: 999px;
-                padding: 5px 12px;
-                border: none;
-                font-size: 12px;
-                cursor: pointer;
-            }
-            .ytm-confirm-btn.cancel {
-                background: transparent;
-                color: #fff;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-            }
-            .ytm-confirm-btn.cancel:hover {
-                background: rgba(255, 255, 255, 0.12);
-            }
-            .ytm-confirm-btn.danger {
-                background: rgba(255, 61, 80, 0.9);
-                color: #fff;
-            }
-            .ytm-confirm-btn.danger:hover {
-                background: rgba(255, 61, 80, 1);
-            }
-            .ytm-lang-section {
-                margin-top: 10px;
-            }
-            .ytm-lang-label {
-                font-size: 12px;
-                margin-bottom: 4px;
-                opacity: 0.8;
-            }
-            .ytm-lang-group {
-                display: inline-flex;
-                gap: 4px;
-                background: rgba(255,255,255,0.06);
-                padding: 4px;
-                border-radius: 999px;
-            }
-            .ytm-lang-pill {
-                border-radius: 999px;
-                border: none;
-                padding: 4px 10px;
-                font-size: 12px;
-                cursor: pointer;
-                background: transparent;
-                color: #fff;
-                opacity: 0.8;
-                transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
-            }
-            .ytm-lang-pill.active {
-                background: rgba(255,255,255,0.9);
-                color: #111;
-                opacity: 1;
-                transform: translateY(-0.5px);
-            }
-            .ytm-lang-pill:hover {
-                opacity: 1;
-            }
-
-            .lyric-line {
-                position: relative;
-            }
-            .lyric-line span {
-                display: block;
-            }
-            .lyric-line .lyric-translation {
-                font-size: 0.52em;
-                opacity: 0.8;
-                margin-top: 4px;
-            }
-
-            .ytm-has-timestamp .lyric-line .lyric-translation {
-                opacity: 0;
-                max-height: 0;
-                margin-top: 0;
-                overflow: hidden;
-                transition:
-                    opacity 0.25s ease-out,
-                    max-height 0.25s ease-out,
-                    margin-top 0.25s ease-out;
-            }
-            .ytm-has-timestamp .lyric-line.show-translation .lyric-translation {
-                opacity: 0.95;
-                max-height: 4em;
-                margin-top: 6px;
-            }
-            .ytm-has-timestamp .lyric-line {
-                margin: 6px 0;
-            }
-            .ytm-has-timestamp .lyric-line.active {
-                margin: 12px 0;
-            }
-        `;
-        document.head.appendChild(style);
-    })();
-
     const handleInteraction = () => {
         if (!ui.btnArea) return;
         ui.btnArea.classList.remove('inactive');
@@ -315,7 +112,6 @@
         }
 
         result.sort((a, b) => (a.time || 0) - (b.time || 0));
-
         return { lines: result, hasTs: true };
     };
 
@@ -429,7 +225,6 @@
 
     function setupUploadMenu(uploadBtn) {
         if (!ui.btnArea || ui.uploadMenu) return;
-
         ui.btnArea.style.position = 'relative';
 
         const menu = createEl('div', 'ytm-upload-menu', 'ytm-upload-menu');
@@ -504,7 +299,6 @@
 
     function setupDeleteDialog(trashBtn) {
         if (!ui.btnArea || ui.deleteDialog) return;
-
         ui.btnArea.style.position = 'relative';
 
         const dialog = createEl('div', 'ytm-delete-dialog', 'ytm-confirm-dialog', `
@@ -1033,7 +827,7 @@
 
         data.forEach(line => {
             const row = createEl('div', '', 'lyric-line');
-            const mainSpan = createEl('span', '', 'lyric-main', line.text);
+            const mainSpan = createEl('span', '', '', line.text);
             row.appendChild(mainSpan);
 
             if (line.translation) {

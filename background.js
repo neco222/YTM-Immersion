@@ -28,42 +28,139 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         return true;
     }
 
+    const normalizeArtist = (s) =>
+        (s || '').toLowerCase().replace(/\s+/g, '').trim();
+
+    const pickBestLrcLibHit = (items, artist) => {
+        if (!Array.isArray(items) || !items.length) return null;
+        const target = normalizeArtist(artist);
+        const getArtistName = (it) =>
+            it.artistName || it.artist || it.artist_name || '';
+
+        let hit = null;
+
+        if (target) {
+            hit = items.find(it => {
+                const a = normalizeArtist(getArtistName(it));
+                return a && a === target && (it.syncedLyrics || it.synced_lyrics);
+            });
+            if (hit) return hit;
+
+            hit = items.find(it => {
+                const a = normalizeArtist(getArtistName(it));
+                return a && a === target && (it.plainLyrics || it.plain_lyrics);
+            });
+            if (hit) return hit;
+
+            hit = items.find(it => {
+                const a = normalizeArtist(getArtistName(it));
+                return a && (a.includes(target) || target.includes(a)) && (it.syncedLyrics || it.synced_lyrics);
+            });
+            if (hit) return hit;
+
+            hit = items.find(it => {
+                const a = normalizeArtist(getArtistName(it));
+                return a && (a.includes(target) || target.includes(a)) && (it.plainLyrics || it.plain_lyrics);
+            });
+            if (hit) return hit;
+        }
+
+        hit = items.find(it => it.syncedLyrics || it.synced_lyrics);
+        if (hit) return hit;
+
+        hit = items.find(it => it.plainLyrics || it.plain_lyrics);
+        if (hit) return hit;
+
+        return items[0];
+    };
+
+    const fetchFromLrcLib = (track, artist) => {
+        if (!track) return Promise.resolve('');
+        const url = `https://lrclib.net/api/search?track_name=${encodeURIComponent(track)}`;
+        console.log('[BG] LrcLib search URL:', url);
+
+        return fetch(url)
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(list => {
+                console.log('[BG] LrcLib search result count:', Array.isArray(list) ? list.length : 'N/A');
+                const items = Array.isArray(list) ? list : [];
+                const hit = pickBestLrcLibHit(items, artist);
+                if (!hit) return '';
+
+                const synced =
+                    hit.syncedLyrics ||
+                    hit.synced_lyrics ||
+                    '';
+                const plain =
+                    hit.plainLyrics ||
+                    hit.plain_lyrics ||
+                    hit.plain_lyrics_text ||
+                    '';
+
+                const lyrics = (synced || plain || '').trim();
+                console.log('[BG] LrcLib chosen track:', {
+                    trackName: hit.trackName || hit.track || '',
+                    artistName: hit.artistName || hit.artist || ''
+                });
+                return lyrics;
+            })
+            .catch(err => {
+                console.error('[BG] LrcLib error:', err);
+                return '';
+            });
+    };
+
     if (req.type === 'GET_LYRICS') {
         const { track, artist, youtube_url } = req.payload;
 
         console.log('[BG] GET_LYRICS', { track, artist, youtube_url });
 
-        fetch('https://lrchub.coreone.work/api/lyrics', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ track, artist, youtube_url })
-        })
-        .then(r => r.text())
-        .then(text => {
-            let lyrics = '';
-            try {
-                const json = JSON.parse(text);
-                console.log('[BG] Lyrics API JSON:', json);
-                const res = json.response || json;
+        const fetchFromLrchub = () => {
+            return fetch('https://lrchub.coreone.work/api/lyrics', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ track, artist, youtube_url })
+            })
+            .then(r => r.text())
+            .then(text => {
+                let lyrics = '';
+                try {
+                    const json = JSON.parse(text);
+                    console.log('[BG] Lyrics API JSON:', json);
+                    const res = json.response || json;
 
-                const synced = typeof res.synced_lyrics === 'string' ? res.synced_lyrics.trim() : '';
-                const plain  = typeof res.plain_lyrics  === 'string' ? res.plain_lyrics.trim()  : '';
+                    const synced = typeof res.synced_lyrics === 'string' ? res.synced_lyrics.trim() : '';
+                    const plain  = typeof res.plain_lyrics  === 'string' ? res.plain_lyrics.trim()  : '';
 
-                if (synced) lyrics = synced;
-                else if (plain) lyrics = plain;
-                else lyrics = text.trim();
-            } catch (e) {
-                console.warn('[BG] Lyrics API response is not JSON, using raw text');
-                lyrics = text.trim();
-            }
+                    if (synced) lyrics = synced;
+                    else if (plain) lyrics = plain;
+                } catch (e) {
+                    console.warn('[BG] Lyrics API response is not JSON, ignoring for LRCHub');
+                }
+                if (!lyrics) {
+                    console.log('[BG] LRCHub returned no lyrics, will fallback to LrcLib if needed');
+                }
+                return lyrics;
+            });
+        };
 
-            console.log('[BG] Base lyrics preview:', lyrics.slice(0, 100));
-            sendResponse({ success: !!lyrics, lyrics });
-        })
-        .catch(err => {
-            console.error("Lyrics API Error:", err);
-            sendResponse({ success: false, error: err.toString() });
-        });
+        fetchFromLrchub()
+            .then(lrchubLyrics => {
+                if (lrchubLyrics) {
+                    console.log('[BG] Using LRCHub lyrics');
+                    return lrchubLyrics;
+                }
+                console.log('[BG] Fallback to LrcLib');
+                return fetchFromLrcLib(track, artist);
+            })
+            .then(finalLyrics => {
+                console.log('[BG] Final lyrics source length:', finalLyrics ? finalLyrics.length : 0);
+                sendResponse({ success: !!finalLyrics, lyrics: finalLyrics || '' });
+            })
+            .catch(err => {
+                console.error("Lyrics API Error:", err);
+                sendResponse({ success: false, error: err.toString() });
+            });
 
         return true;
     }
