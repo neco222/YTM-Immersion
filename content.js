@@ -15,12 +15,14 @@
         bg: null, wrapper: null,
         title: null, artist: null, artwork: null,
         lyrics: null, input: null, settings: null,
-        btnArea: null, uploadMenu: null, deleteDialog: null
+        btnArea: null, uploadMenu: null, deleteDialog: null,
+        settingsBtn: null
     };
 
     let hideTimer = null;
     let uploadMenuGlobalSetup = false;
     let deleteDialogGlobalSetup = false;
+    let settingsOutsideClickSetup = false;
 
     const handleInteraction = () => {
         if (!ui.btnArea) return;
@@ -471,6 +473,17 @@
                 ui.settings.classList.remove('active');
             };
         }
+
+        if (!settingsOutsideClickSetup) {
+            settingsOutsideClickSetup = true;
+            document.addEventListener('click', (ev) => {
+                if (!ui.settings) return;
+                if (!ui.settings.classList.contains('active')) return;
+                if (ui.settings.contains(ev.target)) return;
+                if (ui.settingsBtn && ui.settingsBtn.contains(ev.target)) return;
+                ui.settings.classList.remove('active');
+            }, true);
+        }
     }
 
     function initLayout() {
@@ -517,6 +530,7 @@
 
             if (b === uploadBtnConfig) setupUploadMenu(btn);
             if (b === trashBtnConfig)  setupDeleteDialog(btn);
+            if (b === settingsBtnConfig) ui.settingsBtn = btn;
         });
 
         ui.input = createEl('input');
