@@ -1018,3 +1018,13 @@ body:not(.ytm-custom-layout) ytmusic-player-bar .right-controls .toggle-player-p
   opacity: 1;
   transform: translateY(0);
 }
+.ytm-upload-menu-item.ytm-upload-menu-item-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* もし hover 時の色変化も止めたいなら上書き */
+.ytm-upload-menu-item.ytm-upload-menu-item-disabled:hover {
+  background: transparent;
+}
+
