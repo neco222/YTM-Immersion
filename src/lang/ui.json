@@ -24,7 +24,9 @@
     "settings_sub_lang": "サブ言語 (小さく表示)",
     "settings_save": "保存",
     "settings_reset": "リセット",
-    "settings_saved": "設定を保存しました"
+    "settings_saved": "設定を保存しました",
+    "settings_sync_offset": "歌詞同期オフセット",
+    "settings_sync_offset_save": "歌詞同期オフセットを保存する"
   },
   "en": {
     "unit_hour": "h",
@@ -51,7 +53,9 @@
     "settings_sub_lang": "Sub language",
     "settings_save": "Save",
     "settings_reset": "Reset",
-    "settings_saved": "Saved"
+    "settings_saved": "Saved",
+    "settings_sync_offset": "Lyrics Sync Offset",
+    "settings_sync_offset_save": "Save Lyrics Sync Offset"
   },
   "zh": {
     "unit_hour": "小时",
@@ -78,7 +82,9 @@
     "settings_sub_lang": "副语言",
     "settings_save": "保存",
     "settings_reset": "重置",
-    "settings_saved": "已保存"
+    "settings_saved": "已保存",
+    "settings_sync_offset": "歌词同步偏移",
+    "settings_sync_offset_save": "保存歌词同步偏移"
   },
   "ko": {
     "unit_hour": "시간",
@@ -105,6 +111,8 @@
     "settings_sub_lang": "보조 언어 (작게 표시)",
     "settings_save": "저장",
     "settings_reset": "초기화",
-    "settings_saved": "설정이 저장되었습니다"
+    "settings_saved": "설정이 저장되었습니다",
+    "settings_sync_offset": "가사 싱크 오프셋",
+    "settings_sync_offset_save": "가사 싱크 오프셋 저장"
   }
 }

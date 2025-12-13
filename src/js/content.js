@@ -10,7 +10,9 @@
     mode: true,
     mainLang: 'original',
     subLang: 'en',
-    uiLang: 'ja'
+    uiLang: 'ja',
+    syncOffset:0,
+    saveSyncOffset: false
   };
 
   // フォールバック言語
@@ -42,7 +44,9 @@
       settings_sub_lang: "サブ言語 (小さく表示)",
       settings_save: "保存",
       settings_reset: "リセット",
-      settings_saved: "設定を保存しました"
+      settings_saved: "設定を保存しました",
+      settings_sync_offset: "歌詞同期オフセット",
+      settings_sync_offset_save: "歌詞同期オフセットを保存する",
     }
   };
 
@@ -659,6 +663,9 @@
   let lyricRafId = null;
   
   let timeOffset = 0;
+
+  // ★追加: 最初の曲検知かどうかを判定するフラグ
+  let isFirstSongDetected = true;
 
   let shareMode = false;
   let shareStartIndex = null;
@@ -2514,6 +2521,16 @@
           <button class="ytm-lang-pill" data-value="ko">한국어</button>
         </div>
       </div>
+      <div class="setting-item" id="sync-offset-setting">
+      <span>${t('settings_sync_offset')}(ms)</span>
+      <input type="number" id="sync-offset-input" placeholder="(ms)">
+      </div>
+      <div class="setting-item">
+        <label class="toggle-label">
+          <span>${t('settings_sync_offset_save')}</span>
+          <input type="checkbox" id="sync-offset-save-toggle">
+        </label>
+      </div>
       <div class="setting-item" style="margin-top:15px;">
         <input type="password" id="deepl-key-input" placeholder="DeepL API Key">
       </div>
@@ -2537,6 +2554,11 @@
       const uiLangStored = await storage.get('ytm_ui_lang');
       if (uiLangStored) config.uiLang = uiLangStored;
 
+      const offsetStored = await storage.get('ytm_sync_offset');
+      if (offsetStored !== null) config.syncOffset = offsetStored;
+      const saveOffsetStored = await storage.get('ytm_save_sync_offset');
+      if (saveOffsetStored !== null) config.saveSyncOffset = saveOffsetStored;
+
       // ★スライダー初期値反映
       const weightStored = await storage.get('ytm_lyric_weight');
       if (weightStored) config.lyricWeight = weightStored;
@@ -2546,7 +2568,10 @@
       // HTML要素への反映
       document.getElementById('deepl-key-input').value = config.deepLKey || '';
       document.getElementById('trans-toggle').checked = config.useTrans;
-      
+
+      document.getElementById('sync-offset-input').valueAsNumber = config.syncOffset || 0;
+      document.getElementById('sync-offset-save-toggle').checked = config.saveSyncOffset ;
+
       const wSlider = document.getElementById('weight-slider');
       const bSlider = document.getElementById('bright-slider');
       
@@ -2578,13 +2603,23 @@
     })();
 
     document.getElementById('save-settings-btn').onclick = () => {
+      // ★変更: リロードが必要な設定が変わったかを判定するために、変更前の値を保持
+      const oldUiLang = config.uiLang;
+      const oldMainLang = config.mainLang;
+      const oldSubLang = config.subLang;
+      const oldUseTrans = config.useTrans;
+
       config.deepLKey = document.getElementById('deepl-key-input').value.trim();
       config.useTrans = document.getElementById('trans-toggle').checked;
       
       // ★設定保存
       config.lyricWeight = document.getElementById('weight-slider').value;
       config.bgBrightness = document.getElementById('bright-slider').value;
-      
+
+      const offsetVal = document.getElementById('sync-offset-input').valueAsNumber;
+      config.syncOffset = isNaN(offsetVal) ? 0 : offsetVal;
+      config.saveSyncOffset = document.getElementById('sync-offset-save-toggle').checked;
+
       storage.set('ytm_deepl_key', config.deepLKey);
       storage.set('ytm_trans_enabled', config.useTrans);
       storage.set('ytm_main_lang', config.mainLang);
@@ -2594,8 +2629,23 @@
       storage.set('ytm_lyric_weight', config.lyricWeight);
       storage.set('ytm_bg_brightness', config.bgBrightness);
 
-      alert(t('settings_saved'));
-      location.reload();
+      storage.set('ytm_sync_offset', config.syncOffset);
+      storage.set('ytm_save_sync_offset', config.saveSyncOffset);
+
+      const needReload = (
+          oldUiLang !== config.uiLang ||
+          oldMainLang !== config.mainLang ||
+          oldSubLang !== config.subLang ||
+          oldUseTrans !== config.useTrans
+      );
+
+      if (needReload) {
+          alert(t('settings_saved'));
+          location.reload();
+      } else {
+          showToast(t('settings_saved'));
+          ui.settings.classList.remove('active');
+      }
     };
     
     document.getElementById('clear-all-btn').onclick = storage.clear;
@@ -2942,7 +2992,7 @@
               
               if (timeOffset > 0 && t < timeOffset) timeOffset = 0;
               t = Math.max(0, t - timeOffset);
-              
+              t = Math.min(Math.max(0, t + (config.syncOffset / 1000)), v.duration);              
               if (lyricsData.length && hasTimestamp) {
                 updateLyricHighlight(t);
               }
@@ -3340,6 +3390,21 @@
         timeOffset = 0;
       } else {
         timeOffset = currentTime;
+      }
+
+      if (!config.saveSyncOffset) {
+          if (isFirstSongDetected) {
+              isFirstSongDetected = false;
+          } else {
+              const offsetInput = document.getElementById('sync-offset-input');
+              if (offsetInput) {
+                  offsetInput.value = 0;
+              }
+              config.syncOffset = 0;
+              storage.set('ytm_sync_offset', 0);
+          }
+      } else {
+          isFirstSongDetected = false;
       }
       // ★★★★★★★★★★★★★★★★★★★
 

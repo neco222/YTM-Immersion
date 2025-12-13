@@ -249,7 +249,7 @@ body.ytm-custom-layout ytmusic-search-box {
   font-size: 18px;
 }
 
-#ytm-settings-panel input[type="password"] {
+#ytm-settings-panel input[type="password"]{
   width: 100%;
   padding: 10px;
   background: rgba(0, 0, 0, 0.3);
@@ -258,7 +258,20 @@ body.ytm-custom-layout ytmusic-search-box {
   border-radius: 6px;
   box-sizing: border-box;
 }
-
+#ytm-settings-panel input[type="number"]{
+  width:20%;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+#ytm-settings-panel #sync-offset-setting{
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  justify-content: space-between;
+}
 #ytm-settings-panel button {
   padding: 10px;
   background: #fff;
@@ -277,7 +290,7 @@ body.ytm-custom-layout ytmusic-search-box {
   font-size: 14px;
 }
 
-#trans-toggle {
+#trans-toggle, #sync-offset-save-toggle {
   appearance: none;
   width: 40px;
   height: 22px;
@@ -287,11 +300,11 @@ body.ytm-custom-layout ytmusic-search-box {
   transition: 0.3s;
 }
 
-#trans-toggle:checked {
+#trans-toggle:checked, #sync-offset-save-toggle:checked {
   background: #34c759;
 }
 
-#trans-toggle::after {
+#trans-toggle::after, #sync-offset-save-toggle::after {
   content: '';
   position: absolute;
   top: 2px;
@@ -303,7 +316,7 @@ body.ytm-custom-layout ytmusic-search-box {
   transition: 0.3s;
 }
 
-#trans-toggle:checked::after {
+#trans-toggle:checked::after, #sync-offset-save-toggle:checked::after {
   transform: translateX(18px);
 }
 
