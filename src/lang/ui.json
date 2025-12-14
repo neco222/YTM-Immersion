@@ -26,7 +26,7 @@
     "settings_reset": "リセット",
     "settings_saved": "設定を保存しました",
     "settings_sync_offset": "歌詞同期オフセット",
-    "settings_sync_offset_save": "歌詞同期オフセットを保存する"
+    "settings_sync_offset_save": "曲が切り替わったときにオフセットをリセットしない"
   },
   "en": {
     "unit_hour": "h",
@@ -55,7 +55,7 @@
     "settings_reset": "Reset",
     "settings_saved": "Saved",
     "settings_sync_offset": "Lyrics Sync Offset",
-    "settings_sync_offset_save": "Save Lyrics Sync Offset"
+    "settings_sync_offset_save": "Do not reset offset when the song changes"
   },
   "zh": {
     "unit_hour": "小时",
@@ -84,7 +84,7 @@
     "settings_reset": "重置",
     "settings_saved": "已保存",
     "settings_sync_offset": "歌词同步偏移",
-    "settings_sync_offset_save": "保存歌词同步偏移"
+    "settings_sync_offset_save": "切歌时不重置偏移量"
   },
   "ko": {
     "unit_hour": "시간",
@@ -113,6 +113,6 @@
     "settings_reset": "초기화",
     "settings_saved": "설정이 저장되었습니다",
     "settings_sync_offset": "가사 싱크 오프셋",
-    "settings_sync_offset_save": "가사 싱크 오프셋 저장"
+    "settings_sync_offset_save": "곡이 바뀔 때 오프셋을 리셋하지 않음"
   }
 }

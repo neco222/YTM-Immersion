@@ -46,7 +46,7 @@
       settings_reset: "リセット",
       settings_saved: "設定を保存しました",
       settings_sync_offset: "歌詞同期オフセット",
-      settings_sync_offset_save: "歌詞同期オフセットを保存する",
+      settings_sync_offset_save: "曲が切り替わったときにオフセットをリセットしない",
     }
   };
 
