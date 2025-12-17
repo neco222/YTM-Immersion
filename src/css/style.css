@@ -1934,3 +1934,17 @@ body.ytm-custom-layout ytmusic-player-bar
 .ytm-upload-menu-subtitle {
   color: rgba(255, 255, 255, 0.7) !important;
 }
+
+
+/* ====== Immersion: make progress bar easier to grab ====== */
+ytmusic-player-bar .middle-controls tp-yt-paper-slider {
+  position: relative !important;
+}
+ytmusic-player-bar .middle-controls tp-yt-paper-slider::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -12px;
+  bottom: -12px;
+}
