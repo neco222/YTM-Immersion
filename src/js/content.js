@@ -3414,7 +3414,30 @@
   }
 
 
-  const tick = async () => {
+  
+  function setupPlayerBarBlankClickGuard() {
+    const bar = document.querySelector('ytmusic-player-bar');
+    if (!bar || bar.dataset.ytmBlankClickGuard === '1') return;
+    bar.dataset.ytmBlankClickGuard = '1';
+
+    // 余白クリックがプレイヤーの開閉に繋がるのを防ぐ（ボタン/スライダー等は通常通り動かす）
+    bar.addEventListener('click', (e) => {
+      const t = e.target;
+      if (!t || typeof t.closest !== 'function') return;
+
+      // インタラクティブ要素は通す（閉じるボタンの逆三角もここに含まれる想定）
+      if (
+        t.closest('button, a, input, textarea, select, tp-yt-paper-icon-button, tp-yt-paper-button, tp-yt-paper-slider, ytmusic-like-button-renderer, ytmusic-toggle-button-renderer')
+      ) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
+  }
+
+const tick = async () => {
 
     let toggleBtn = document.getElementById('my-mode-toggle');
     
@@ -3454,6 +3477,7 @@
     initLayout();
     
 
+    setupPlayerBarBlankClickGuard();
     (function patchSliders() {
       const sliders = document.querySelectorAll('ytmusic-player-bar .middle-controls tp-yt-paper-slider');
       sliders.forEach(s => {
@@ -3462,6 +3486,7 @@
           s.style.paddingLeft = '20px';
           s.style.paddingRight = '20px';
           s.style.minWidth = '0';
+          s.style.cursor = 'pointer';
         } catch (e) { }
       });
     })();
