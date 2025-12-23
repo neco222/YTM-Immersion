@@ -3010,7 +3010,7 @@
              </div>
              <div class="setting-row" style="flex-direction:column; align-items:flex-start;">
                 <div class="ytm-lang-label">${t('settings_sub_lang')}</div>
-                <div class="ytm-lang-group" id="main-lang-group" style="margin-top:6px;">
+                <div class="ytm-lang-group" id="sub-lang-group" style="margin-top:6px;">
                   <button class="ytm-lang-pill" data-value="original">Original</button>
                   <button class="ytm-lang-pill" data-value="ja">日本語</button>
                   <button class="ytm-lang-pill" data-value="en">English</button>
