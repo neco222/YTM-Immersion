@@ -1088,3 +1088,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 });
+self.addEventListener('fetch', (event) => {
+  if (event.preloadResponse) {
+    event.waitUntil(event.preloadResponse);
+  }
+});
