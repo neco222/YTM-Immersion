@@ -1,7 +1,7 @@
 const CLOUD_STORAGE_KEY = 'dailyReplayCloudState';
 
 const DEFAULT_CLOUD_STATE = {
-  serverBaseUrl: 'http://immersionproject.coreone.work',
+  serverBaseUrl: 'https://immersionproject.coreone.work',
   loginPath: '/auth/discord',
   recoveryToken: null,
   lastSyncAt: null,
@@ -9,15 +9,15 @@ const DEFAULT_CLOUD_STATE = {
 };
 
 const SHARED_TRANSLATE_ENDPOINTS = [
-  'http://immersionproject.coreone.work/api/translate',
-  'http://immersionproject.coreone.work/api/translate/'
+  'https://immersionproject.coreone.work/api/translate',
+  'httpa://immersionproject.coreone.work/api/translate/'
 ];
 
 const COMMUNITY_REMAINING_ENDPOINTS = [
   'https://immersionproject.coreone.work/api/community/remaining',
   'https://immersionproject.coreone.work/api/community/remaining/',
-  'http://immersionproject.coreone.work/api/community/remaining',
-  'http://immersionproject.coreone.work/api/community/remaining/',
+  'https://immersionproject.coreone.work/api/community/remaining',
+  'https://immersionproject.coreone.work/api/community/remaining/',
 ];
 
 
@@ -365,10 +365,31 @@ const fetchFromLrchub = (track, artist, youtube_url, video_id) => {
     });
 };
 
+
+// --- GitHub raw のブラウザキャッシュ対策: 毎回URLを変えて最新を取りに行く ---
+const withRandomCacheBuster = (url, buster) => {
+  const v = String(buster || (1000 + Math.floor(Math.random() * 9000)));
+  try {
+    const u = new URL(url);
+    u.searchParams.set('v', v);
+    return u.toString();
+  } catch (e) {
+    const sep = url.includes('?') ? '&' : '?';
+    return url + sep + 'v=' + v;
+  }
+};
+
 const fetchFromGithub = (video_id) => {
-  if (!video_id) return Promise.resolve({ lyrics: '', dynamicLines: null });
+  if (!video_id) return Promise.resolve({ lyrics: '', dynamicLines: null, subLyrics: '' });
 
   const base = `https://raw.githubusercontent.com/LRCHub/${video_id}/main`;
+  const __cacheBuster = (1000 + Math.floor(Math.random() * 9000));
+
+  // duet: optional sub vocal LRC (only lines that should be shown on the right)
+  const subUrl = `${base}/sub.txt`;
+  const pSub = fetch(withRandomCacheBuster(subUrl, __cacheBuster), { cache: 'no-store' })
+    .then(r => (r.ok ? r.text() : ''))
+    .catch(() => '');
 
   const normalizeDynamicLines = (json) => {
     if (!json) return null;
@@ -416,7 +437,7 @@ const fetchFromGithub = (video_id) => {
 
   // 1) DynamicLyrics.json を最優先
   const dynUrl = `${base}/DynamicLyrics.json`;
-  return fetch(dynUrl)
+  return fetch(withRandomCacheBuster(dynUrl, __cacheBuster), { cache: 'no-store' })
     .then(async (r) => {
       if (!r.ok) return null;
       try {
@@ -434,15 +455,19 @@ const fetchFromGithub = (video_id) => {
       return null;
     })
     .catch(() => null)
-    .then(dynRes => {
-      if (dynRes && dynRes.lyrics) return dynRes;
+    .then(async (dynRes) => {
+      const subLyrics = (await pSub) || '';
+
+      if (dynRes && dynRes.lyrics) {
+        return { ...dynRes, subLyrics };
+      }
 
       // 2) README.md (タイムスタンプ/プレーン)
       const readmeUrl = `${base}/README.md`;
-      return fetch(readmeUrl)
+      return fetch(withRandomCacheBuster(readmeUrl, __cacheBuster), { cache: 'no-store' })
         .then(r => (r.ok ? r.text() : ''))
         .then(text => {
-          if (!text) return { lyrics: '', dynamicLines: null };
+          if (!text) return { lyrics: '', dynamicLines: null, subLyrics };
 
           const body = text
             .split('\n')
@@ -453,11 +478,11 @@ const fetchFromGithub = (video_id) => {
             .join('\n')
             .trim();
 
-          return { lyrics: body, dynamicLines: null };
+          return { lyrics: body, dynamicLines: null, subLyrics };
         })
-        .catch(() => ({ lyrics: '', dynamicLines: null }));
+        .catch(() => ({ lyrics: '', dynamicLines: null, subLyrics }));
     });
-};
+};;
 
 const extractVideoIdFromUrl = (youtube_url) => {
   if (!youtube_url) return null;
@@ -797,25 +822,20 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   // 歌詞取得
   if (req.type === 'GET_LYRICS') {
     const { track, artist, youtube_url, video_id } = req.payload || {};
+    const tabId = sender && sender.tab ? sender.tab.id : null;
 
-    console.log('[BG] GET_LYRICS (Parallel + Merge Candidates)', { track, artist });
+    console.log('[BG] GET_LYRICS (Hub + GitHub)', { track, artist });
 
     (async () => {
       const timeoutMs = 15000;
 
-      // 1. LRCHub
+      // 1) LRCHub
       const pHub = withTimeout(
         fetchFromLrchub(track, artist, youtube_url, video_id),
         timeoutMs, 'lrchub'
       ).then(res => ({ source: 'hub', data: res })).catch(e => ({ source: 'hub', error: e }));
 
-      // 2. LrcLib
-      const pLib = withTimeout(
-        fetchFromLrcLib(track, artist),
-        timeoutMs, 'lrclib'
-      ).then(res => ({ source: 'lib', data: res })).catch(e => ({ source: 'lib', error: e }));
-
-      // 3. GitHub
+      // 2) GitHub
       const vidForGit = video_id || extractVideoIdFromUrl(youtube_url);
       let pGit = Promise.resolve({ source: 'git', data: '' });
       if (vidForGit) {
@@ -824,96 +844,143 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           .catch(e => ({ source: 'git', error: e }));
       }
 
-      const results = await Promise.all([pHub, pLib, pGit]);
-      
-      const hubRes = results.find(r => r.source === 'hub');
-      const libRes = results.find(r => r.source === 'lib');
-      const gitRes = results.find(r => r.source === 'git');
+      // 返答を一度だけ返す（遅い方を待たない）
+      let responded = false;
+      const sendOnce = (payload) => {
+        if (responded) return;
+        responded = true;
+        sendResponse(payload);
+      };
 
+      // LRCHub の candidates/config/requests は、GitHub が先に返っても後追いで UI 更新できるように push する
+      const pushMetaUpdate = (meta) => {
+        if (!tabId) return;
+        try {
+          chrome.tabs.sendMessage(tabId, { type: 'LYRICS_META_UPDATE', payload: meta });
+        } catch (e) {
+          // ignore
+        }
+      };
+
+      // 並列実行（"両方待ち" をやめる）
+      let hubRes = null;
+      let gitRes = null;
+
+      const handleHub = async () => {
+        const r = await pHub;
+        hubRes = r;
+
+        let sharedCandidates = [];
+        let sharedConfig = null;
+        let sharedRequests = [];
+
+        if (hubRes && !hubRes.error && hubRes.data) {
+          if (Array.isArray(hubRes.data.candidates)) sharedCandidates = hubRes.data.candidates.slice();
+          if (hubRes.data.config) sharedConfig = hubRes.data.config;
+          if (Array.isArray(hubRes.data.requests)) sharedRequests = hubRes.data.requests.slice();
+        }
+
+        const hasCandidates = sharedCandidates.length > 0;
+
+        // まだ返してない & LRCHub に歌詞がある → 即返す
+        if (!responded && hubRes && !hubRes.error && hubRes.data && hubRes.data.lyrics && hubRes.data.lyrics.trim()) {
+          const d = hubRes.data;
+          console.log('[BG] Won (fast): LRCHub');
+          sendOnce({
+            success: true,
+            lyrics: d.lyrics,
+            dynamicLines: d.dynamicLines || null,
+            subLyrics: (typeof d.subLyrics === 'string' ? d.subLyrics : ''),
+            hasSelectCandidates: d.hasSelectCandidates || hasCandidates,
+            candidates: sharedCandidates,
+            config: d.config || null,
+            requests: d.requests || [],
+            githubFallback: false,
+          });
+          return;
+        }
+
+        // 既に GitHub で歌詞を返していたら、候補/設定だけ後追いで通知
+        if (responded && (hasCandidates || sharedConfig || (sharedRequests && sharedRequests.length))) {
+          const vid = video_id || extractVideoIdFromUrl(youtube_url);
+          pushMetaUpdate({
+            video_id: vid,
+            hasSelectCandidates: hasCandidates,
+            candidates: sharedCandidates,
+            config: sharedConfig,
+            requests: sharedRequests,
+          });
+        }
+      };
+
+      const handleGit = async () => {
+        const r = await pGit;
+        gitRes = r;
+
+        // duet: sub.txt may arrive via GitHub even when LRCHub won first
+        try {
+          if (gitRes && !gitRes.error && gitRes.data && typeof gitRes.data.subLyrics === 'string' && gitRes.data.subLyrics.trim()) {
+            pushMetaUpdate({ video_id: vidForGit, subLyrics: gitRes.data.subLyrics });
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        if (
+          !responded &&
+          gitRes &&
+          !gitRes.error &&
+          gitRes.data &&
+          typeof gitRes.data.lyrics === 'string' &&
+          gitRes.data.lyrics.trim()
+        ) {
+          const d = gitRes.data;
+          console.log('[BG] Won (fast): GitHub');
+          // ※ candidates/config/requests は後から LRCHub が来たら pushMetaUpdate で更新
+          sendOnce({
+            success: true,
+            lyrics: d.lyrics,
+            dynamicLines: d.dynamicLines || null,
+            subLyrics: (typeof d.subLyrics === 'string' ? d.subLyrics : ''),
+            hasSelectCandidates: false,
+            candidates: [],
+            config: null,
+            requests: [],
+            githubFallback: true,
+          });
+        }
+      };
+
+      const hubTask = handleHub();
+      const gitTask = handleGit();
+
+      await Promise.allSettled([hubTask, gitTask]);
+
+      // どちらかで返していたら終了
+      if (responded) return;
+
+      // ここに来るのは「どっちも歌詞が取れなかった」だけ。候補だけでも返す（あれば）
       let sharedCandidates = [];
       let sharedConfig = null;
       let sharedRequests = [];
-      
-      if (hubRes && !hubRes.error && hubRes.data && Array.isArray(hubRes.data.candidates)) {
-          sharedCandidates.push(...hubRes.data.candidates);
-          if (hubRes.data.config) sharedConfig = hubRes.data.config;
-          if (Array.isArray(hubRes.data.requests)) sharedRequests = hubRes.data.requests;
+
+      if (hubRes && !hubRes.error && hubRes.data) {
+        if (Array.isArray(hubRes.data.candidates)) sharedCandidates = hubRes.data.candidates.slice();
+        if (hubRes.data.config) sharedConfig = hubRes.data.config;
+        if (Array.isArray(hubRes.data.requests)) sharedRequests = hubRes.data.requests.slice();
       }
-      
-      if (libRes && !libRes.error && libRes.data && Array.isArray(libRes.data.candidates)) {
-          const existingIds = new Set(sharedCandidates.map(c => c.id));
-          libRes.data.candidates.forEach(c => {
-              if (!existingIds.has(c.id)) {
-                  sharedCandidates.push(c);
-                  existingIds.add(c.id);
-              }
-          });
-      }
-      
+
       const hasCandidates = sharedCandidates.length > 0;
 
-      // A. LRCHub
-      if (hubRes && !hubRes.error && hubRes.data && hubRes.data.lyrics && hubRes.data.lyrics.trim()) {
-        const d = hubRes.data;
-        console.log('[BG] Won: LRCHub');
-        sendResponse({
-          success: true,
-          lyrics: d.lyrics,
-          dynamicLines: d.dynamicLines || null,
-          hasSelectCandidates: d.hasSelectCandidates || hasCandidates,
-          candidates: sharedCandidates,
-          config: d.config || null,
-          requests: d.requests || [],
-          githubFallback: false,
-        });
-        return;
-      }
-
-      // B. LrcLib
-      if (libRes && !libRes.error && libRes.data && libRes.data.lyrics && libRes.data.lyrics.trim()) {
-        console.log('[BG] Won: LrcLib');
-        sendResponse({
-          success: true,
-          lyrics: libRes.data.lyrics,
-          dynamicLines: null,
-          hasSelectCandidates: hasCandidates,
-          candidates: sharedCandidates,
-          config: sharedConfig,
-          requests: sharedRequests,
-          githubFallback: false,
-        });
-        return;
-      }
-
-      // C. GitHub
-      if (
-        gitRes &&
-        !gitRes.error &&
-        gitRes.data &&
-        typeof gitRes.data.lyrics === 'string' &&
-        gitRes.data.lyrics.trim()
-      ) {
-        console.log('[BG] Won: GitHub');
-        sendResponse({
-          success: true,
-          lyrics: gitRes.data.lyrics,
-          dynamicLines: gitRes.data.dynamicLines || null,
-          hasSelectCandidates: hasCandidates,
-          candidates: sharedCandidates,
-          config: sharedConfig,
-          requests: sharedRequests,
-          githubFallback: true,
-        });
-        return;
-      }
-
-      console.log('[BG] No lyrics found (Auto)');
-      sendResponse({
+      console.log('[BG] No lyrics found (Hub+GitHub)');
+      sendOnce({
         success: false,
         lyrics: '',
         dynamicLines: null,
         hasSelectCandidates: hasCandidates,
         candidates: sharedCandidates,
+        config: sharedConfig,
+        requests: sharedRequests,
       });
 
     })();
