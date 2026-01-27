@@ -969,7 +969,7 @@ body:not(.ytm-custom-layout) ytmusic-multi-page-menu-renderer {
   backdrop-filter: blur(20px) saturate(180%) !important;
   border: 1px solid rgba(255, 255, 255, 0.10) !important;
 }
-/* 次に再生トースト */
+/* 次に再生などのトースト */
 tp-yt-paper-toast.style-scope {
   background: rgba(30, 30, 30, 0.5) !important;
   backdrop-filter: blur(20px) saturate(180%) !important;
