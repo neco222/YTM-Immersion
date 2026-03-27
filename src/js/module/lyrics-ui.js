@@ -381,6 +381,16 @@
     return found || null;
   };
   function setupMovieMode() {
+    const resizeObserver = new ResizeObserver(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    const targetWrapper = document.getElementById("ytm-custom-wrapper");
+    if (targetWrapper) {
+      resizeObserver.observe(targetWrapper);
+    } else {
+      resizeObserver.observe(document.body);
+    }
+    
     const check = () => {
       const video = document.querySelector("ytmusic-player#player.style-scope.ytmusic-player-page");
       const target = document.querySelector("#ytm-custom-wrapper");
@@ -388,7 +398,7 @@
       const switcherTarget = document.querySelector("#ytm-custom-info-area");
 
       if (!video || !target || !switcher || !switcherTarget) {
-        setTimeout(check, 100);
+        setTimeout(check, 300);
         return;
       }
 
@@ -417,9 +427,6 @@
       if (!originParent.contains(switcher)) {
         originSwitcherTarget.appendChild(switcher);
       }
-      setTimeout(() => {
-        window.dispatchEvent(new Event('resize'));
-      }, 100);
       setTimeout(() => {
         window.dispatchEvent(new Event('resize'));
       }, 300);
@@ -2505,12 +2512,13 @@ function renderSettingsPanel() {
     if (triggerBtn) {
       const rect = triggerBtn.getBoundingClientRect();
       const panelWidth = 360;
+      const isMoviemode = triggerBtn.classList.contains("moviemode");
       let left = rect.left + rect.width / 2 - panelWidth / 2;
       left = Math.max(8, Math.min(left, window.innerWidth - panelWidth - 8));
       panel.style.position = 'fixed';
       panel.style.left = `${left}px`;
-      panel.style.bottom = `${window.innerHeight - rect.top + 10}px`;
-      panel.style.top = 'auto';
+      panel.style.bottom = isMoviemode ?  'auto' : `${(window.innerHeight - rect.top + 10)}px`;
+      panel.style.top = isMoviemode ? `${rect.top - 10 + 65}px` : 'auto';// 65pxはちょうどいい高さオフセット
       panel.style.right = 'auto';
     }
 

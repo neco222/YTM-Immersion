@@ -180,9 +180,6 @@ body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-player#player.style-scope.
   pointer-events: none;
   margin: 0 !important;
 }
-ytmusic-av-toggle.notpremium{
-  display:none !important;
-}
 body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-av-toggle{
   transition: opacity 0.5s ease, visibility 0.5s ease;
   opacity:1;
@@ -190,9 +187,10 @@ body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-av-toggle{
   margin-top: 10px;
 }
 body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-av-toggle.moviemode{
-    position: fixed;
-    top: 1vh;
-    right: 1vw;
+  position: fixed;
+  top: 1vh;
+  right: 1vw;
+  margin-top: 6px;
 }
 
 body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-av-toggle.inactive {
@@ -201,15 +199,21 @@ body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-av-toggle.inactive {
   pointer-events: none;
 }
 body.ytm-custom-layout .av-toggle.ytmusic-av-toggle{
-  background: rgba(20, 20, 20, 40%);
+  border-width: 1px;
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.15);
+  border-image: initial;
+  height: 40px;
+  background: rgba(200, 200, 200, 0.1);
   backdrop-filter: blur(20px) saturate(100%);
 }
-body.ytm-custom-layout .song-button.ytmusic-av-toggle, .video-button.ytmusic-av-toggle{
-  background-color: transparent;
+body.ytm-custom-layout .song-button.ytmusic-av-toggle, body.ytm-custom-layout .video-button.ytmusic-av-toggle{
+  background-color: transparent !important;
+  height: 38px !important;
 }
 body.ytm-custom-layout ytmusic-av-toggle[playback-mode=OMV_PREFERRED] .video-button.ytmusic-av-toggle,
 body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-button.ytmusic-av-toggle {
-  background-color: rgba(0, 0, 0, 50%);
+  background-color: rgba(0, 0, 0, 0.3) !important;
 }
 #ytm-custom-left-col {
   display: flex;
@@ -325,7 +329,7 @@ body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-butt
   color: #fff;
   cursor: pointer;
   font-weight: 700;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(20px);
   font-size: 13px;
   transition: 0.2s;
 }
@@ -1117,8 +1121,9 @@ tp-yt-paper-listbox.ytmusic-menu-popup-renderer {
   transition: opacity 0.16s ease-out, transform 0.16s ease-out;
   overflow: visible;
 }
-
-
+.ytm-upload-menu.moviemode{
+  inset: 53px auto auto 0px !important;
+}
 .ytm-upload-menu.visible {
   opacity: 1;
   transform: translateY(0) scale(1);
