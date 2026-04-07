@@ -154,7 +154,8 @@
     uiLang: 'ja',
     syncOffset: 0,
     saveSyncOffset: false,
-    useSharedTranslateApi: false
+    useSharedTranslateApi: false,
+    leftAlignInfo: false
   };
 
   // フォールバック言語
@@ -188,7 +189,8 @@
       settings_saved: "設定を保存しました",
       settings_sync_offset: "歌詞同期オフセット",
       settings_sync_offset_save: "曲が切り替わったときにオフセットをリセットしない",
-      settings_fast_mode: "高速読み込みモード (既にデータベースにある曲のみ取得出来ます。自動登録は無効です。)"
+      settings_fast_mode: "高速読み込みモード (既にデータベースにある曲のみ取得出来ます。自動登録は無効です。)",
+      settings_left_align: "タイトルとアーティスト名を左揃えにする"
     },
     en: {
       unit_hour: "hours",
@@ -219,7 +221,8 @@
       settings_saved: "Settings saved",
       settings_sync_offset: "Lyrics sync offset",
       settings_sync_offset_save: "Don't reset offset when the song changes",
-      settings_fast_mode: "Fast Load Mode (May reduce accuracy for covers)"
+      settings_fast_mode: "Fast Load Mode (May reduce accuracy for covers)",
+      settings_left_align: "Left align title and artist name"
     },
     ko: {
       unit_hour: "시간",
