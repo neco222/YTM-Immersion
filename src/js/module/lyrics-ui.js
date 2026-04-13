@@ -85,6 +85,8 @@
   const DUET_TIME_TOLERANCE = 0.15;
   const DUET_DUPLICATE_TOLERANCE = 1.0;
   const SAME_TIMESTAMP_TOLERANCE = 0.05;
+  const DYNAMIC_ACTIVE_TAIL_SEC = 0.2;
+  const DYNAMIC_OVERLAP_TOLERANCE = 0.05;
 
   const normalizeLyricCompareText = (text) => String(text || '')
     .replace(/\u00A0/g, ' ')
@@ -125,6 +127,70 @@
       if (ts.length) return Math.min(...ts) / 1000;
     }
     return null;
+  };
+
+  const getDynamicLineEndSec = (line) => {
+    if (!line) return null;
+    if (typeof line.__ytmEndSec === 'number' && Number.isFinite(line.__ytmEndSec)) {
+      return line.__ytmEndSec;
+    }
+
+    const startSec = getDynamicLineStartSec(line);
+    let endSec = null;
+
+    if (typeof line?.endTimeMs === 'number' && Number.isFinite(line.endTimeMs)) {
+      endSec = line.endTimeMs / 1000;
+    } else if (typeof line?.endTimeMs === 'string') {
+      const n = Number(line.endTimeMs);
+      if (Number.isFinite(n)) endSec = n / 1000;
+    }
+
+    if (Array.isArray(line?.chars) && line.chars.length) {
+      const lastCharMs = line.chars
+        .map(ch => {
+          if (typeof ch?.t === 'number' && Number.isFinite(ch.t)) return ch.t;
+          if (typeof ch?.t === 'string') {
+            const n = Number(ch.t);
+            if (Number.isFinite(n)) return n;
+          }
+          return null;
+        })
+        .filter(v => v != null)
+        .reduce((max, v) => Math.max(max, v), Number.NEGATIVE_INFINITY);
+
+      if (Number.isFinite(lastCharMs)) {
+        const charTailSec = (lastCharMs / 1000) + DYNAMIC_ACTIVE_TAIL_SEC;
+        endSec = (typeof endSec === 'number') ? Math.max(endSec, charTailSec) : charTailSec;
+      }
+    }
+
+    if (!(typeof endSec === 'number') && typeof startSec === 'number') {
+      endSec = startSec + 1.5;
+    }
+
+    if (typeof startSec === 'number' && typeof endSec === 'number' && endSec <= startSec) {
+      endSec = startSec + DYNAMIC_ACTIVE_TAIL_SEC;
+    }
+
+    if (typeof endSec === 'number' && Number.isFinite(endSec)) {
+      line.__ytmEndSec = endSec;
+      return endSec;
+    }
+    return null;
+  };
+
+  const isLineDynamicallyActiveAtTime = (line, timeSec, tolerance = DYNAMIC_OVERLAP_TOLERANCE) => {
+    const startSec = (typeof line?._dynamicRenderStartSec === 'number' && Number.isFinite(line._dynamicRenderStartSec))
+      ? line._dynamicRenderStartSec
+      : null;
+    const endSec = (typeof line?._dynamicRenderEndSec === 'number' && Number.isFinite(line._dynamicRenderEndSec))
+      ? line._dynamicRenderEndSec
+      : null;
+
+    return typeof startSec === 'number' &&
+      typeof endSec === 'number' &&
+      (timeSec + tolerance) >= startSec &&
+      timeSec <= (endSec + tolerance);
   };
 
   const isSameTimestamp = (a, b, tolerance = SAME_TIMESTAMP_TOLERANCE) =>
@@ -3608,6 +3674,11 @@ const optimizeLineBreaks = (text) => {
         row.classList.add('main-vocal');
       }
 
+      if (line && typeof line === 'object') {
+        line._dynamicRenderStartSec = null;
+        line._dynamicRenderEndSec = null;
+      }
+
       if (typeof line.time === 'number') {
         row.dataset.startTime = String(line.time);
       }
@@ -3644,6 +3715,22 @@ const optimizeLineBreaks = (text) => {
                 dyn = dynamicLines[index];
              }
           }
+        }
+      }
+
+      if (line && typeof line === 'object' && dyn) {
+        const dynStartSec = getDynamicLineStartSec(dyn);
+        const dynEndSec = getDynamicLineEndSec(dyn);
+        line._dynamicRenderStartSec = typeof dynStartSec === 'number' ? dynStartSec : (
+          typeof line.time === 'number' ? line.time : null
+        );
+        line._dynamicRenderEndSec = typeof dynEndSec === 'number' ? dynEndSec : null;
+
+        if (typeof line._dynamicRenderStartSec === 'number') {
+          row.dataset.dynamicStartTime = String(line._dynamicRenderStartSec);
+        }
+        if (typeof line._dynamicRenderEndSec === 'number') {
+          row.dataset.dynamicEndTime = String(line._dynamicRenderEndSec);
         }
       }
       
@@ -3815,6 +3902,12 @@ const optimizeLineBreaks = (text) => {
           }
         }
       }
+
+      lyricsData.forEach((line, lineIndex) => {
+        if (activeIndices.has(lineIndex)) return;
+        if (!isLineDynamicallyActiveAtTime(line, t)) return;
+        activeIndices.add(lineIndex);
+      });
 
       if (activeIndices.size > 1) {
         const activeList = Array.from(activeIndices).sort((a, b) => a - b);
