@@ -82,6 +82,172 @@
     return t.toFixed(3);
   };
 
+  const DUET_TIME_TOLERANCE = 0.15;
+  const DUET_DUPLICATE_TOLERANCE = 1.0;
+  const SAME_TIMESTAMP_TOLERANCE = 0.05;
+
+  const normalizeLyricCompareText = (text) => String(text || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, '')
+    .replace(/[.,，。!！?？:：;；'"\-‐‑‒–—―~〜()（）\[\]{}<>「」『』【】]/g, '')
+    .toLowerCase()
+    .trim();
+
+  const normalizeLyricCompareTextStrict = (text) => String(text || '')
+    .normalize('NFKC')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, '')
+    .replace(/[\p{P}\p{S}\p{C}]/gu, '')
+    .toLowerCase()
+    .trim();
+
+  const extractDynamicLineText = (line) => {
+    if (typeof line?.text === 'string' && line.text.length) return line.text;
+    if (Array.isArray(line?.chars)) {
+      return line.chars.map(c => c?.c || c?.text || c?.caption || '').join('');
+    }
+    return '';
+  };
+
+  const getDynamicLineStartSec = (line) => {
+    if (typeof line?.startTimeMs === 'number') return line.startTimeMs / 1000;
+    if (typeof line?.startTimeMs === 'string') {
+      const n = Number(line.startTimeMs);
+      if (!Number.isNaN(n)) return n / 1000;
+    }
+    if (typeof line?.time === 'number') return line.time;
+    if (Array.isArray(line?.chars) && line.chars.length) {
+      const ts = line.chars
+        .map(c => (typeof c?.t === 'number' ? c.t : null))
+        .filter(v => v != null);
+      if (ts.length) return Math.min(...ts) / 1000;
+    }
+    return null;
+  };
+
+  const isSameTimestamp = (a, b, tolerance = SAME_TIMESTAMP_TOLERANCE) =>
+    typeof a === 'number' &&
+    typeof b === 'number' &&
+    Math.abs(a - b) <= tolerance;
+
+  const scoreLyricTextMatch = (a, b) => {
+    if (!a || !b) return 0;
+    if (a === b) return 100;
+    if (a.includes(b) || b.includes(a)) return 60;
+    return 0;
+  };
+
+  const findCrossSideDuplicateIndex = (lines, line) => {
+    if (!Array.isArray(lines) || !lines.length || !line) return -1;
+
+    const lineText = normalizeLyricCompareTextStrict(line?.text);
+    if (!lineText) return -1;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const existing = lines[i];
+      if (!isSameTimestamp(existing?.time, line?.time, DUET_DUPLICATE_TOLERANCE)) {
+        if (typeof existing?.time === 'number' && typeof line?.time === 'number' && existing.time < line.time - DUET_DUPLICATE_TOLERANCE) {
+          break;
+        }
+        continue;
+      }
+
+      const isCrossSideDuplicate = existing?.duetSide && line?.duetSide && existing.duetSide !== line.duetSide;
+      if (!isCrossSideDuplicate) continue;
+
+      const existingText = normalizeLyricCompareTextStrict(existing?.text);
+      if (existingText && scoreLyricTextMatch(existingText, lineText) >= 100) {
+        return i;
+      }
+    }
+
+    return -1;
+  };
+
+  const preferDuplicateMainLine = (existingLine, incomingLine) => {
+    if (!existingLine) return incomingLine || null;
+    if (!incomingLine) return existingLine;
+    if (existingLine.duetSide === incomingLine.duetSide) return existingLine;
+    if (incomingLine.duetSide === 'left') return incomingLine;
+    if (existingLine.duetSide === 'left') return existingLine;
+    return existingLine;
+  };
+
+  const findDynamicLineForRender = (line, sourceLines, usedIndexes) => {
+    if (!line || typeof line.time !== 'number') return null;
+    if (!Array.isArray(sourceLines) || !sourceLines.length) return null;
+
+    const wantedText = normalizeLyricCompareTextStrict(line.text);
+    const candidates = [];
+
+    sourceLines.forEach((dynLine, idx) => {
+      const startSec = getDynamicLineStartSec(dynLine);
+      if (typeof startSec !== 'number') return;
+
+      const timeDiff = Math.abs(startSec - line.time);
+      if (timeDiff > DUET_TIME_TOLERANCE) return;
+
+      const dynText = normalizeLyricCompareTextStrict(extractDynamicLineText(dynLine));
+      const textScore = scoreLyricTextMatch(wantedText, dynText);
+
+      candidates.push({
+        idx,
+        dynLine,
+        timeDiff,
+        textScore,
+        used: !!(usedIndexes && usedIndexes.has(idx)),
+      });
+    });
+
+    if (!candidates.length) return null;
+
+    candidates.sort((a, b) =>
+      Number(a.used) - Number(b.used) ||
+      b.textScore - a.textScore ||
+      a.timeDiff - b.timeDiff ||
+      a.idx - b.idx
+    );
+
+    const picked = candidates[0];
+    if (usedIndexes) usedIndexes.add(picked.idx);
+    return picked.dynLine;
+  };
+
+  // コンテンツマッチでDynamic LRC行を探す（時間が大きくずれている場合の1文字同期対応用）
+  // timeTolerance: 秒単位の許容幅。1文字同期の場合は5.0秒推奨。
+  const findDynamicLineByContent = (line, sourceLines, timeTolerance = 5.0) => {
+    if (!line || !Array.isArray(sourceLines) || !sourceLines.length) return null;
+    const wantedText = normalizeLyricCompareTextStrict(line.text);
+    if (!wantedText) return null;
+
+    let bestMatch = null;
+    let bestScore = 0;
+    let bestTimeDiff = Infinity;
+
+    sourceLines.forEach(dynLine => {
+      const startSec = getDynamicLineStartSec(dynLine);
+      if (typeof startSec !== 'number') return;
+      if (typeof line.time === 'number' && Math.abs(startSec - line.time) > timeTolerance) return;
+
+      const dynText = normalizeLyricCompareTextStrict(extractDynamicLineText(dynLine));
+      const score = scoreLyricTextMatch(wantedText, dynText);
+      if (score <= 0) return;
+
+      const timeDiff = typeof line.time === 'number' ? Math.abs(startSec - line.time) : 0;
+      // 同スコアなら時間が近い方を優先
+      if (score > bestScore || (score === bestScore && timeDiff < bestTimeDiff)) {
+        bestScore = score;
+        bestTimeDiff = timeDiff;
+        bestMatch = dynLine;
+      }
+    });
+
+    // 完全一致(100)のみ採用: 部分一致(60)だと文字数・内容が違うデータが当たり誤表示の原因になる
+    return bestScore >= 100 ? bestMatch : null;
+  };
+
   // Dynamic.lrc形式のパーサー（sub.txt用）
   const parseDynamicLrcForSub = (text) => {
     const out = [];
@@ -261,6 +427,12 @@
     // （グローバル変数dynamicLinesを直接変更せず、フィルタ用のセットを保存）
     _duetExcludedTimes = excludedMainTimes;
 
+    _duetExcludedTimes = excludedMainTimes;
+
+    _duetExcludedTimes = excludedMainTimes;
+
+    _duetExcludedTimes = excludedMainTimes;
+
     const merged = [];
     filteredMain.forEach(l => merged.push({ ...l, duetSide: 'left' }));
     (subLines || []).forEach(l => merged.push({ ...l, duetSide: 'right' }));
@@ -279,6 +451,96 @@
     });
 
     return merged;
+  };
+
+  const mergeDuetLinesWithSimultaneousSupport = (mainLines, subLines) => {
+    const subLinesWithTime = (subLines || []).filter(l => typeof l?.time === 'number');
+    const excludedMainTimes = new Set();
+
+    // Dynamic LRC（1文字同期）がある場合は5秒の許容幅+内容一致で重複判定
+    // 通常LRCはタイムスタンプが精確なので完全一致（SAME_TIMESTAMP_TOLERANCE=0.05s）のみ重複とみなす
+    const hasDynamicLrc = Array.isArray(dynamicLines) && dynamicLines.length > 0;
+    const dedupeTimeTolerance = hasDynamicLrc ? 5.0 : SAME_TIMESTAMP_TOLERANCE;
+
+    const filteredMain = (mainLines || []).filter((mainLine) => {
+      if (typeof mainLine?.time !== 'number') return true;
+
+      const mainText = normalizeLyricCompareTextStrict(mainLine.text);
+      if (!mainText) return true;
+
+      // dedupeTimeTolerance以内のタイムスタンプ差かつ同一テキストのサブ行があれば重複とみなしてメイン行を除外
+      const duplicateSub = subLinesWithTime.find((subLine) => {
+        if (!isSameTimestamp(mainLine.time, subLine.time, dedupeTimeTolerance)) return false;
+        const subText = normalizeLyricCompareTextStrict(subLine.text);
+        return !!subText && scoreLyricTextMatch(mainText, subText) >= 100;
+      });
+      if (duplicateSub) {
+        excludedMainTimes.add(Math.round(mainLine.time * 1000));
+        return false;
+      }
+      return true;
+    });
+
+    const merged = [];
+    filteredMain.forEach(l => merged.push({ ...l, duetSide: 'left' }));
+    (subLines || []).forEach(l => merged.push({ ...l, duetSide: 'right' }));
+
+    merged.sort((a, b) => {
+      const at = (typeof a.time === 'number') ? a.time : Number.POSITIVE_INFINITY;
+      const bt = (typeof b.time === 'number') ? b.time : Number.POSITIVE_INFINITY;
+
+      if (isSameTimestamp(at, bt)) {
+        const ap = a.duetSide === 'right' ? 1 : 0;
+        const bp = b.duetSide === 'right' ? 1 : 0;
+        return ap - bp;
+      }
+      return at - bt;
+    });
+
+    const deduped = [];
+    for (const line of merged) {
+      const duplicateIdx = findCrossSideDuplicateIndex(deduped, line);
+      const prev = duplicateIdx >= 0 ? deduped[duplicateIdx] : null;
+      if (duplicateIdx >= 0) {
+        deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+        continue;
+      }
+      if (duplicateIdx >= 0) {
+        deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+        continue;
+      }
+
+      if (duplicateIdx >= 0) {
+        // 同内容の重複だけ落とす。別歌詞の同時進行は残す。
+        if (prev?.duetSide === 'left' && line?.duetSide === 'right') {
+          deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+        }
+        continue;
+      }
+
+      deduped.push(line);
+    }
+
+    return deduped;
+  };
+
+  const collapseCrossSideDuplicateLyrics = (lines) => {
+    if (!Array.isArray(lines) || !lines.length) return Array.isArray(lines) ? lines : [];
+
+    const deduped = [];
+    for (const line of lines) {
+      const duplicateIdx = findCrossSideDuplicateIndex(deduped, line);
+      const prev = duplicateIdx >= 0 ? deduped[duplicateIdx] : null;
+
+      if (duplicateIdx >= 0) {
+        deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+        continue;
+      }
+
+      deduped.push(line);
+    }
+
+    return deduped;
   };
 
   const getDynamicLineForTime = (sec) => {
@@ -546,6 +808,43 @@
       if(switcher) switcher.classList.add('notpremium');
     }
     return !requireSignIn || !notPremium;
+  }
+
+  function preferLyricsDefault(targetKey, attempt = 0) {
+    if (!targetKey || currentKey !== targetKey) return;
+
+    const switcher = document.querySelector("ytmusic-av-toggle");
+    if (!switcher) {
+      if (attempt < 10) setTimeout(() => preferLyricsDefault(targetKey, attempt + 1), 300);
+      return;
+    }
+
+    const mode = switcher.getAttribute("playback-mode");
+    if (mode === "ATV_PREFERRED") return;
+    if (mode && mode !== "OMV_PREFERRED") return;
+
+    const songBtn = switcher.querySelector('.song-button.ytmusic-av-toggle, .song-button');
+    if (!songBtn) {
+      if (attempt < 10) setTimeout(() => preferLyricsDefault(targetKey, attempt + 1), 300);
+      return;
+    }
+
+    try {
+      songBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+      if (typeof songBtn.click === 'function') songBtn.click();
+    } catch (e) {
+      console.warn('Failed to switch default playback mode to lyrics', e);
+    }
+
+    if (attempt < 10) {
+      setTimeout(() => {
+        if (currentKey !== targetKey) return;
+        const latestMode = switcher.getAttribute("playback-mode");
+        if (latestMode !== "ATV_PREFERRED") {
+          preferLyricsDefault(targetKey, attempt + 1);
+        }
+      }, 250);
+    }
   }
   const hoverTimeInfoSetup = () => {
     const timeToSeconds = (str) => {
@@ -863,6 +1162,7 @@
       if (Array.isArray(p.candidates)) lyricsCandidates = p.candidates;
       if (p.config !== undefined) lyricsConfig = p.config;
       if (Array.isArray(p.requests)) lyricsRequests = p.requests;
+      syncLyricsLockState();
 
       // duet: sub lyrics can arrive later (GitHub)
       if (typeof p.subLyrics === 'string') {
@@ -1213,7 +1513,7 @@ async function applyLyricsText(rawLyrics) {
       if (hasDuetSub) {
         // even if the main lyrics didn't have tags, duet sub implies timestamp mode
         hasTimestamp = true;
-        baseLines = mergeDuetLines(parsed, subLines);
+        baseLines = mergeDuetLinesWithSimultaneousSupport(parsed, subLines);
       }
     }
     document.body.classList.toggle('ytm-duet-mode', hasDuetSub);
@@ -1229,6 +1529,8 @@ async function applyLyricsText(rawLyrics) {
       }
     }
     if (keyAtStart !== currentKey) return;
+
+    finalLines = collapseCrossSideDuplicateLyrics(finalLines);
 
     // Normalize Dynamic lyrics: expand "word chunks" into character-level timings
     try {
@@ -1607,6 +1909,84 @@ async function applyLyricsText(rawLyrics) {
     }, 10000);
   }
 
+  let lyricsLockState = null;
+
+  function normalizeLockRequestId(req) {
+    return String(req?.request || req?.id || '').trim().toLowerCase();
+  }
+
+  function inferLockRequestTarget(req) {
+    if (!req || typeof req !== 'object') return null;
+
+    const explicit = String(req.target || '').trim().toLowerCase();
+    if (explicit === 'sync' || explicit === 'dynamic') return explicit;
+
+    const key = normalizeLockRequestId(req);
+    if (key === 'lock_current_sync') return 'sync';
+    if (key === 'lock_current_dynamic') return 'dynamic';
+
+    const label = String(req.label || '').toLowerCase();
+    if (label.includes('lock dynamic') || label.includes('dynamic') || label.includes('動く')) return 'dynamic';
+    if (label.includes('lock sync') || label.includes('sync') || label.includes('同期') || label.includes('readme')) return 'sync';
+
+    return null;
+  }
+
+  function buildLyricsLockState(requests, config, prevState) {
+    const prevByRequest = prevState && prevState.byRequest && typeof prevState.byRequest === 'object'
+      ? prevState.byRequest
+      : {};
+
+    const next = {
+      sync: false,
+      dynamic: false,
+      byRequest: { ...prevByRequest }
+    };
+
+    if (Array.isArray(requests)) {
+      requests.forEach((req) => {
+        if (!req || typeof req !== 'object') return;
+
+        const requestId = normalizeLockRequestId(req);
+        const target = inferLockRequestTarget(req);
+        const locked = req.locked === true || req.available === false || req.state === 'locked';
+
+        if (requestId) next.byRequest[requestId] = locked;
+        if (target && locked) next[target] = true;
+      });
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(next.byRequest, 'lock_current_sync')) {
+      next.byRequest.lock_current_sync = !!(config && (config.SyncLocked || config.syncLocked || config.ReadmeLocked || config.readmeLocked));
+    }
+    if (!Object.prototype.hasOwnProperty.call(next.byRequest, 'lock_current_dynamic')) {
+      next.byRequest.lock_current_dynamic = !!(config && (config.dynmicLock || config.dynamicLocked || config.DynamicLocked));
+    }
+
+    next.sync = !!next.byRequest.lock_current_sync || !!next.sync;
+    next.dynamic = !!next.byRequest.lock_current_dynamic || !!next.dynamic;
+
+    return next;
+  }
+
+  function syncLyricsLockState() {
+    lyricsLockState = buildLyricsLockState(lyricsRequests, lyricsConfig, lyricsLockState);
+    return lyricsLockState;
+  }
+
+  function isLockRequestLocked(req, state = lyricsLockState) {
+    const target = inferLockRequestTarget(req);
+    const requestId = normalizeLockRequestId(req);
+
+    if (requestId && state?.byRequest && Object.prototype.hasOwnProperty.call(state.byRequest, requestId)) {
+      return !!state.byRequest[requestId];
+    }
+    if (target && state && Object.prototype.hasOwnProperty.call(state, target)) {
+      return !!state[target];
+    }
+    return !!req?.locked;
+  }
+
   function refreshCandidateMenu() {
     if (!ui.uploadMenu) {
       if (ui.lyricsBtn) ui.lyricsBtn.classList.remove('ytm-lyrics-has-candidates');
@@ -1659,6 +2039,7 @@ async function applyLyricsText(rawLyrics) {
     const lockList = lockSection ? lockSection.querySelector('.ytm-upload-menu-lock-list') : null;
     const addSyncBtn = ui.uploadMenu.querySelector('.ytm-upload-menu-item[data-action="add-sync"]');
     if (!lockSection || !lockList || !addSyncBtn) return;
+    const lockState = syncLyricsLockState();
     lockList.innerHTML = '';
     const mergedRequests = [];
     if (Array.isArray(lyricsRequests)) {
@@ -1683,18 +2064,13 @@ async function applyLyricsText(rawLyrics) {
       lockSection.style.display = 'none';
     } else {
       lockSection.style.display = 'block';
-      const syncLocked = !!(lyricsConfig && lyricsConfig.SyncLocked);
-      const dynamicLocked = !!(lyricsConfig && lyricsConfig.dynmicLock);
       activeReqs.forEach(r => {
         const btn = document.createElement('button');
         btn.className = 'ytm-upload-menu-item';
         btn.dataset.action = 'lock-request';
         btn.dataset.requestId = r.request || r.id || '';
         btn.textContent = r.label || r.request || r.id || '歌詞を確定';
-        const key = String(r.request || r.id || '').toLowerCase();
-        const isSync = r.target === 'sync' || key.includes('sync');
-        const isDynamic = r.target === 'dynamic' || key.includes('dynamic');
-        const locked = r.locked || (isSync && syncLocked) || (isDynamic && dynamicLocked);
+        const locked = isLockRequestLocked(r, lockState);
         if (locked) {
           btn.classList.add('ytm-upload-menu-item-disabled');
           btn.title = 'すでに確定された歌詞です';
@@ -1702,9 +2078,7 @@ async function applyLyricsText(rawLyrics) {
         lockList.appendChild(btn);
       });
     }
-    const syncLocked = !!(lyricsConfig && lyricsConfig.SyncLocked);
-    const dynamicLocked = !!(lyricsConfig && lyricsConfig.dynmicLock);
-    const shouldDisableAddSync = syncLocked && dynamicLocked;
+    const shouldDisableAddSync = !!lockState?.sync && !!lockState?.dynamic;
     addSyncBtn.classList.toggle('ytm-upload-menu-item-disabled', shouldDisableAddSync);
     if (shouldDisableAddSync) {
       addSyncBtn.dataset.disabledMessage = 'すでに確定された歌詞です';
@@ -1854,6 +2228,7 @@ async function applyLyricsText(rawLyrics) {
           selectedCandidateId = null;
           lyricsRequests = null;
           lyricsConfig = null;
+          lyricsLockState = null;
           renderLyrics([]);
           refreshCandidateMenu();
           refreshLockMenu();
@@ -2395,6 +2770,7 @@ function renderSettingsPanel() {
           selectedCandidateId = null;
           lyricsRequests = null;
           lyricsConfig = null;
+          lyricsLockState = null;
           
           renderLyrics([]);
           refreshCandidateMenu();
@@ -2762,6 +3138,7 @@ function renderSettingsPanel() {
     selectedCandidateId = null;
     lyricsRequests = null;
     lyricsConfig = null;
+    lyricsLockState = null;
     let data = null;
     let noLyricsCached = false;
     if (cached !== null && cached !== undefined) {
@@ -2778,8 +3155,10 @@ function renderSettingsPanel() {
         if (Array.isArray(cached.candidates)) lyricsCandidates = cached.candidates;
         if (Array.isArray(cached.requests)) lyricsRequests = cached.requests;
         if (cached.config) lyricsConfig = cached.config;
+        if (cached.lockState && typeof cached.lockState === 'object') lyricsLockState = cached.lockState;
       }
     }
+    syncLyricsLockState();
     refreshCandidateMenu();
     refreshLockMenu();
     if (!data && noLyricsCached) {
@@ -3087,6 +3466,7 @@ const withRandomCacheBusterFast = (url) => {
         console.log('[CS] GET_LYRICS response:', res);
         lyricsRequests = Array.isArray(res?.requests) ? res.requests : null;
         lyricsConfig = res?.config || null;
+        syncLyricsLockState();
         lyricsCandidates = Array.isArray(res?.candidates) ? res.candidates : null;
         refreshCandidateMenu();
         refreshLockMenu();
@@ -3106,7 +3486,8 @@ const withRandomCacheBusterFast = (url) => {
               subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
               candidates: lyricsCandidates || null,
               requests: lyricsRequests || null,
-              config: lyricsConfig || null
+              config: lyricsConfig || null,
+              lockState: lyricsLockState || null
             });
           }
         } else {
@@ -3215,6 +3596,8 @@ const optimizeLineBreaks = (text) => {
     document.body.classList.toggle('ytm-no-timestamp', !hasTimestamp);
 
     const fragment = document.createDocumentFragment();
+    const usedMainDynamicIndices = new Set();
+    const usedSubDynamicIndices = new Set();
 
     data.forEach((line, index) => {
       const row = createEl('div', '', 'lyric-line');
@@ -3236,10 +3619,16 @@ const optimizeLineBreaks = (text) => {
       
       // サブボーカル(right)にはduetSubDynamicLinesを使用、メインにはdynamicLinesを使用
       if (line && line.duetSide === 'right') {
-        // サブボーカル用のdynamic lines
+        // サブボーカル用のdynamic lines（sub.txtがDynamic LRC形式の場合）
         if (duetSubDynamicLines && Array.isArray(duetSubDynamicLines) && duetSubDynamicLines.length) {
           if (typeof line.time === 'number') {
-             dyn = getSubDynamicLineForTime(line.time);
+             dyn = findDynamicLineForRender(line, duetSubDynamicLines, usedSubDynamicIndices);
+          }
+        } else if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
+          // sub.txtが通常LRC形式の場合、メインのDynamic LRCからコンテンツマッチで1文字同期データを取得
+          // → サブボーカル右側も1文字ハイライトに対応（5秒の許容幅+内容一致で検索）
+          if (typeof line.time === 'number') {
+            dyn = findDynamicLineByContent(line, dynamicLines);
           }
         }
       } else {
@@ -3247,7 +3636,7 @@ const optimizeLineBreaks = (text) => {
         if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
           if (typeof line.time === 'number') {
              // 時間で検索
-             dyn = getDynamicLineForTime(line.time);
+             dyn = findDynamicLineForRender(line, dynamicLines, usedMainDynamicIndices);
           } else {
              // デュエットモード以外のみインデックスフォールバックを使用
              const isDuetMode = document.body.classList.contains('ytm-duet-mode');
@@ -3389,19 +3778,81 @@ const optimizeLineBreaks = (text) => {
       targets.push(PipManager.pipLyricsContainer);
     }
 
-    // When the next line comes within 1 second, also highlight the previous line together
-    const prevIdx = (idx > 0 && idx < lyricsData.length &&
-      typeof lyricsData[idx]?.time === 'number' &&
-      typeof lyricsData[idx - 1]?.time === 'number' &&
-      (lyricsData[idx].time - lyricsData[idx - 1].time) <= 1.0
-    ) ? (idx - 1) : -1;
+    const activeIndices = new Set();
+    if (idx >= 0 && idx < lyricsData.length) {
+      activeIndices.add(idx);
+
+      const currentLineTime = lyricsData[idx]?.time;
+      if (typeof currentLineTime === 'number') {
+        for (let i = idx - 1; i >= 0; i--) {
+          if (!isSameTimestamp(lyricsData[i]?.time, currentLineTime)) break;
+          activeIndices.add(i);
+        }
+        for (let i = idx + 1; i < lyricsData.length; i++) {
+          if (!isSameTimestamp(lyricsData[i]?.time, currentLineTime)) break;
+          activeIndices.add(i);
+        }
+      }
+
+      if (activeIndices.size === 1) {
+        const prevIdx = (idx > 0 && idx < lyricsData.length &&
+          typeof lyricsData[idx]?.time === 'number' &&
+          typeof lyricsData[idx - 1]?.time === 'number' &&
+          (lyricsData[idx].time - lyricsData[idx - 1].time) <= 1.0
+        ) ? (idx - 1) : -1;
+
+        if (prevIdx >= 0) {
+          // デュエットモードでduetSideが異なる行（メイン⇔サブ）は追加しない
+          // （1文字追跡タイムスタンプ時にサブボーカルがダブる原因になるため）
+          const currentSide = lyricsData[idx]?.duetSide;
+          const prevSide = lyricsData[prevIdx]?.duetSide;
+          const isDifferentDuetSide = currentSide && prevSide && currentSide !== prevSide;
+          if (!isDifferentDuetSide) {
+            const currentText = normalizeLyricCompareTextStrict(lyricsData[idx]?.text);
+            const prevText = normalizeLyricCompareTextStrict(lyricsData[prevIdx]?.text);
+            const sameDisplayedLyric = !!currentText && !!prevText && scoreLyricTextMatch(currentText, prevText) >= 100;
+            if (!sameDisplayedLyric) activeIndices.add(prevIdx);
+          }
+        }
+      }
+
+      if (activeIndices.size > 1) {
+        const activeList = Array.from(activeIndices).sort((a, b) => a - b);
+        activeList.forEach((activeIdx) => {
+          const activeLine = lyricsData[activeIdx];
+          if (activeLine?.duetSide !== 'right') return;
+
+          const activeText = normalizeLyricCompareTextStrict(activeLine?.text);
+          if (!activeText) return;
+
+          const hasMatchingLeft = activeList.some((otherIdx) => {
+            if (otherIdx === activeIdx) return false;
+            const otherLine = lyricsData[otherIdx];
+            if (otherLine?.duetSide !== 'left') return false;
+            // Dynamic LRC（1文字同期）の場合は行の開始時刻が最大5秒ずれる可能性があるため
+            // 許容幅を動的に切り替える（通常LRCはDUET_DUPLICATE_TOLERANCE=1.0sのまま）
+            const dedupeTol = (Array.isArray(dynamicLines) && dynamicLines.length > 0)
+              ? 5.0
+              : DUET_DUPLICATE_TOLERANCE;
+            if (!isSameTimestamp(otherLine?.time, activeLine?.time, dedupeTol)) return false;
+
+            const otherText = normalizeLyricCompareTextStrict(otherLine?.text);
+            return !!otherText && scoreLyricTextMatch(otherText, activeText) >= 100;
+          });
+
+          if (hasMatchingLeft) {
+            activeIndices.delete(activeIdx);
+          }
+        });
+      }
+    }
 
     targets.forEach(container => {
       const rows = container.querySelectorAll('.lyric-line');
       if (rows.length === 0) return;
 
       rows.forEach((r, i) => {
-        const isActive = (i === idx) || (i === prevIdx);
+        const isActive = activeIndices.has(i);
         const isPrimary = (i === idx);
 
         if (isActive) {
@@ -3662,6 +4113,7 @@ const optimizeLineBreaks = (text) => {
     const reqInfo = Array.isArray(lyricsRequests)
       ? lyricsRequests.find(r => r.id === requestId || r.request === requestId || (r.aliases || []).includes(requestId))
       : null;
+    const requestTarget = inferLockRequestTarget(reqInfo || { request: requestId });
     try {
       const res = await new Promise(resolve => {
         chrome.runtime.sendMessage(
@@ -3674,10 +4126,16 @@ const optimizeLineBreaks = (text) => {
         if (reqInfo) {
           reqInfo.locked = true;
           reqInfo.available = false;
-          if (!lyricsConfig) lyricsConfig = {};
-          if (reqInfo.target === 'sync') lyricsConfig.SyncLocked = true;
-          else if (reqInfo.target === 'dynamic') lyricsConfig.dynmicLock = true;
         }
+        const currentState = syncLyricsLockState();
+        const nextState = {
+          ...(currentState || { sync: false, dynamic: false, byRequest: {} }),
+          byRequest: { ...(currentState?.byRequest || {}) }
+        };
+        nextState.byRequest[String(requestId || '').toLowerCase()] = true;
+        if (requestTarget === 'sync') nextState.sync = true;
+        if (requestTarget === 'dynamic') nextState.dynamic = true;
+        lyricsLockState = nextState;
         refreshLockMenu();
       } else {
         const msg = res?.error || (res?.raw && (res.raw.message || res.raw.code)) || '歌詞の確定に失敗しました';
@@ -3814,6 +4272,7 @@ const optimizeLineBreaks = (text) => {
       selectedCandidateId = null;
       lyricsRequests = null;
       lyricsConfig = null;
+      lyricsLockState = null;
       shareMode = false;
       shareStartIndex = null;
       shareEndIndex = null;
@@ -3827,6 +4286,7 @@ const optimizeLineBreaks = (text) => {
       }
 
       updateMetaUI(meta);
+      preferLyricsDefault(key);
 
       // PIPウィンドウのメタデータと歌詞表示をリセット
       if (PipManager) {
@@ -3971,4 +4431,3 @@ trySetArtistLink();
 
     tick();
   };
-
