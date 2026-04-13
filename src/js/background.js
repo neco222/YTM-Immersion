@@ -324,7 +324,7 @@ if (req.type === 'GET_CLOUD_STATE') {
       ).then(res => ({ source: 'hub', data: res })).catch(e => ({ source: 'hub', error: e }));
 
       const vidForGit = video_id || API.extractVideoIdFromUrl(youtube_url);
-      let pGit = Promise.resolve({ source: 'git', data: { lyrics: '', dynamicLines: null, subLyrics: '', candidates: [] } });
+      let pGit = Promise.resolve({ source: 'git', data: { lyrics: '', dynamicLines: null, subLyrics: '', candidates: [], meaningData: null } });
       if (vidForGit) {
         pGit = API.fetchFromGithub(vidForGit)
           .then(res => ({ source: 'git', data: res }))
@@ -357,6 +357,7 @@ if (req.type === 'GET_CLOUD_STATE') {
         const sharedCandidates = mergeCandidateLists(getGitCandidates(), getHubCandidates());
         const sharedConfig = hubRes && !hubRes.error && hubRes.data ? (hubRes.data.config || null) : null;
         const sharedRequests = hubRes && !hubRes.error && hubRes.data && Array.isArray(hubRes.data.requests) ? hubRes.data.requests.slice() : [];
+        const sharedMeaning = gitRes && !gitRes.error && gitRes.data ? (gitRes.data.meaningData || null) : null;
         const hasCandidates = sharedCandidates.length > 0;
 
         if (!responded && hubRes && !hubRes.error && hubRes.data && hubRes.data.lyrics && hubRes.data.lyrics.trim()) {
@@ -371,12 +372,13 @@ if (req.type === 'GET_CLOUD_STATE') {
             candidates: sharedCandidates,
             config: sharedConfig,
             requests: sharedRequests,
+            meaningData: sharedMeaning,
             githubFallback: false,
           });
           return;
         }
 
-        if (responded && (hasCandidates || sharedConfig || (sharedRequests && sharedRequests.length))) {
+        if (responded && (hasCandidates || sharedConfig || (sharedRequests && sharedRequests.length) || sharedMeaning)) {
           const vid = video_id || API.extractVideoIdFromUrl(youtube_url);
           pushMetaUpdate({
             video_id: vid,
@@ -384,6 +386,7 @@ if (req.type === 'GET_CLOUD_STATE') {
             candidates: sharedCandidates,
             config: sharedConfig,
             requests: sharedRequests,
+            meaningData: sharedMeaning,
           });
         }
       };
@@ -409,6 +412,10 @@ if (req.type === 'GET_CLOUD_STATE') {
               meta.candidates = mergedCandidates;
               shouldPush = true;
             }
+            if (gitRes.data.meaningData) {
+              meta.meaningData = gitRes.data.meaningData;
+              shouldPush = true;
+            }
             if (shouldPush) pushMetaUpdate(meta);
           }
         } catch (e) {
@@ -426,6 +433,7 @@ if (req.type === 'GET_CLOUD_STATE') {
             candidates: mergedCandidates,
             config: null,
             requests: [],
+            meaningData: d.meaningData || null,
             githubFallback: true,
           });
         }
@@ -437,6 +445,7 @@ if (req.type === 'GET_CLOUD_STATE') {
       const sharedCandidates = mergeCandidateLists(getGitCandidates(), getHubCandidates());
       const sharedConfig = hubRes && !hubRes.error && hubRes.data ? (hubRes.data.config || null) : null;
       const sharedRequests = hubRes && !hubRes.error && hubRes.data && Array.isArray(hubRes.data.requests) ? hubRes.data.requests.slice() : [];
+      const sharedMeaning = gitRes && !gitRes.error && gitRes.data ? (gitRes.data.meaningData || null) : null;
       const hasCandidates = sharedCandidates.length > 0;
 
       console.log('[BG] No lyrics found (Hub+GitHub)');
@@ -448,6 +457,7 @@ if (req.type === 'GET_CLOUD_STATE') {
         candidates: sharedCandidates,
         config: sharedConfig,
         requests: sharedRequests,
+        meaningData: sharedMeaning,
       });
 
     })();
@@ -659,4 +669,3 @@ self.addEventListener('fetch', (event) => {
     event.waitUntil(event.preloadResponse);
   }
 });
-

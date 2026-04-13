@@ -1249,6 +1249,12 @@
       }
 
       // candidates/config が更新されたらメニューを再描画
+      if (p.meaningData) {
+        setLyricsMeaningData(p.meaningData);
+        persistMeaningDataToCurrentCache().catch(() => { });
+        if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
+      }
+
       refreshCandidateMenu();
       refreshLockMenu();
     } catch (e) {
@@ -1278,6 +1284,361 @@
       el.classList.remove('visible');
     }, 5000);
   };
+
+  const escapeHtml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const parseMeaningTimeToSecLocal = (value) => {
+    const s = String(value || '').trim();
+    const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
+    if (!m) return null;
+    const min = Number(m[1]);
+    const sec = Number(m[2]);
+    let frac = m[3] || '0';
+    if (frac.length === 1) frac += '00';
+    else if (frac.length === 2) frac += '0';
+    const ms = Number(frac.slice(0, 3));
+    if (!Number.isFinite(min) || !Number.isFinite(sec) || !Number.isFinite(ms)) return null;
+    return (min * 60) + sec + (ms / 1000);
+  };
+
+  const normalizeMeaningPayloadLocal = (payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+
+    const timeline = Array.isArray(payload.timeline_meanings)
+      ? payload.timeline_meanings
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const start = typeof item.start === 'string' ? item.start.trim() : '';
+          const end = typeof item.end === 'string' ? item.end.trim() : '';
+          return {
+            start,
+            end,
+            startSec: parseMeaningTimeToSecLocal(start),
+            endSec: parseMeaningTimeToSecLocal(end),
+            label: typeof item.label === 'string' ? item.label.trim() : '',
+            summary: typeof item.summary === 'string' ? item.summary.trim() : '',
+            detail: typeof item.detail === 'string' ? item.detail.trim() : '',
+            emotion: Array.isArray(item.emotion) ? item.emotion.map(v => String(v || '').trim()).filter(Boolean) : [],
+            keywords: Array.isArray(item.keywords) ? item.keywords.map(v => String(v || '').trim()).filter(Boolean) : [],
+          };
+        })
+        .filter(Boolean)
+      : [];
+
+    const finalSummaryRaw = payload.final_summary && typeof payload.final_summary === 'object'
+      ? payload.final_summary
+      : {};
+    const finalSummary = {
+      short: typeof finalSummaryRaw.short === 'string' ? finalSummaryRaw.short.trim() : '',
+      long: typeof finalSummaryRaw.long === 'string' ? finalSummaryRaw.long.trim() : '',
+    };
+
+    if (!timeline.length && !finalSummary.short && !finalSummary.long) return null;
+
+    return {
+      title: typeof payload.title === 'string' ? payload.title.trim() : '',
+      timeline_meanings: timeline,
+      final_summary: finalSummary,
+    };
+  };
+
+  const parseMeaningPayloadTextLocal = (text) => {
+    const raw = String(text || '').replace(/^\uFEFF/, '').trim();
+    if (!raw) return null;
+
+    const candidates = [raw];
+    const fenced = raw.match(/```(?:json|txt|text)?\s*([\s\S]*?)```/i);
+    if (fenced && fenced[1]) candidates.push(fenced[1].trim());
+    const firstBrace = raw.indexOf('{');
+    const lastBrace = raw.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      candidates.push(raw.slice(firstBrace, lastBrace + 1).trim());
+    }
+
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      try {
+        const parsed = JSON.parse(candidate);
+        const normalized = normalizeMeaningPayloadLocal(parsed);
+        if (normalized) return normalized;
+      } catch (e) {
+      }
+    }
+
+    return null;
+  };
+
+  const getMeaningSegments = () => (
+    lyricsMeaning && Array.isArray(lyricsMeaning.timeline_meanings)
+      ? lyricsMeaning.timeline_meanings
+      : []
+  );
+
+  const getCurrentPlaybackTimeSec = () => {
+    const v = document.querySelector('video');
+    if (!v || typeof v.currentTime !== 'number' || Number.isNaN(v.currentTime)) return null;
+    let t = v.currentTime;
+    if (!(timeOffset > 0 && t < timeOffset)) {
+      t = Math.max(0, t - timeOffset);
+    }
+    const duration = Number.isFinite(v.duration) ? v.duration : null;
+    t = Math.max(0, t + (config.syncOffset / 1000));
+    if (typeof duration === 'number' && duration > 0) {
+      t = Math.min(t, duration);
+    }
+    return t;
+  };
+
+  const findMeaningIndexByTime = (timeSec) => {
+    const segments = getMeaningSegments();
+    if (!segments.length) return -1;
+    if (typeof timeSec !== 'number' || Number.isNaN(timeSec)) return 0;
+
+    let fallbackIndex = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      const startSec = typeof segment.startSec === 'number' ? segment.startSec : null;
+      const endSec = typeof segment.endSec === 'number' ? segment.endSec : null;
+
+      if (startSec != null && timeSec + 0.12 >= startSec) {
+        fallbackIndex = i;
+      }
+      if ((startSec == null || timeSec + 0.12 >= startSec) &&
+          (endSec == null || timeSec <= endSec + 0.12)) {
+        return i;
+      }
+      if (startSec != null && timeSec < startSec) {
+        break;
+      }
+    }
+
+    return fallbackIndex;
+  };
+
+  const resolveMeaningIndex = (preferredTime = null) => {
+    const segments = getMeaningSegments();
+    if (!segments.length) return -1;
+    if (typeof preferredTime === 'number' && !Number.isNaN(preferredTime)) {
+      return findMeaningIndexByTime(preferredTime);
+    }
+    if (lastActiveIndex >= 0 && lyricsData[lastActiveIndex] && typeof lyricsData[lastActiveIndex].time === 'number') {
+      return findMeaningIndexByTime(lyricsData[lastActiveIndex].time);
+    }
+    const now = getCurrentPlaybackTimeSec();
+    if (typeof now === 'number') return findMeaningIndexByTime(now);
+    return 0;
+  };
+
+  const buildMeaningChipGroup = (label, values, kind) => {
+    if (!Array.isArray(values) || !values.length) return '';
+    const chips = values.map((value) => `<span class="ytm-meaning-chip ${kind}">${escapeHtml(value)}</span>`).join('');
+    return `<div class="ytm-meaning-chip-group"><div class="ytm-meaning-chip-label">${escapeHtml(label)}</div><div class="ytm-meaning-chip-list">${chips}</div></div>`;
+  };
+
+  const getMeaningDisplayTitle = () => {
+    const raw = (lyricsMeaning && lyricsMeaning.title) || ui.title?.textContent || 'Song Meaning';
+    return String(raw || 'Song Meaning').trim();
+  };
+
+  function hideMeaningSummaryPopup() {
+    if (ui.meaningSummaryBackdrop) ui.meaningSummaryBackdrop.classList.remove('visible');
+    if (ui.meaningSummaryDialog) ui.meaningSummaryDialog.classList.remove('visible');
+  }
+
+  function ensureMeaningSummaryDialog() {
+    if (ui.meaningSummaryBackdrop && ui.meaningSummaryDialog) return;
+
+    const backdrop = createEl('div', 'ytm-meaning-summary-backdrop', 'ytm-meaning-summary-backdrop');
+    const dialog = createEl('div', 'ytm-meaning-summary-dialog', 'ytm-meaning-summary-dialog');
+    backdrop.appendChild(dialog);
+    backdrop.addEventListener('click', (ev) => {
+      if (ev.target === backdrop) hideMeaningSummaryPopup();
+    });
+    document.body.appendChild(backdrop);
+    ui.meaningSummaryBackdrop = backdrop;
+    ui.meaningSummaryDialog = dialog;
+
+    if (!meaningSummaryGlobalSetup) {
+      meaningSummaryGlobalSetup = true;
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') hideMeaningSummaryPopup();
+      });
+    }
+  }
+
+  function renderMeaningPanel(index = null) {
+    if (!ui.meaningPanel) return;
+
+    const normalizedIndex = typeof index === 'number' ? index : resolveMeaningIndex();
+    const segments = getMeaningSegments();
+    const segment = normalizedIndex >= 0 ? segments[normalizedIndex] : null;
+    const summary = lyricsMeaning && lyricsMeaning.final_summary ? lyricsMeaning.final_summary : { short: '', long: '' };
+
+    if (!lyricsMeaning) {
+      ui.meaningPanel.innerHTML = '';
+      ui.meaningPanel.classList.remove('active');
+      activeMeaningIndex = -1;
+      return;
+    }
+
+    if (!segment) {
+      const fallbackText = summary.long || summary.short || 'この曲の解説データはまだありません。';
+      ui.meaningPanel.innerHTML = `
+        <div class="ytm-meaning-panel-head">
+          <div>
+            <div class="ytm-meaning-panel-eyebrow">解説</div>
+            <div class="ytm-meaning-panel-title">${escapeHtml(getMeaningDisplayTitle())}</div>
+          </div>
+          <button class="ytm-meaning-close-btn" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="ytm-meaning-panel-body">
+          <p class="ytm-meaning-panel-text">${escapeHtml(fallbackText)}</p>
+        </div>
+      `;
+      activeMeaningIndex = -1;
+    } else {
+      ui.meaningPanel.innerHTML = `
+        <div class="ytm-meaning-panel-head">
+          <div>
+            <div class="ytm-meaning-panel-eyebrow">解説</div>
+            <div class="ytm-meaning-panel-range">${escapeHtml(segment.start || '--:--')} - ${escapeHtml(segment.end || '--:--')}</div>
+            <div class="ytm-meaning-panel-title">${escapeHtml(segment.label || 'Lyric Meaning')}</div>
+          </div>
+          <button class="ytm-meaning-close-btn" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="ytm-meaning-panel-body">
+          ${segment.summary ? `<p class="ytm-meaning-panel-summary">${escapeHtml(segment.summary)}</p>` : ''}
+          ${segment.detail ? `<p class="ytm-meaning-panel-text">${escapeHtml(segment.detail)}</p>` : ''}
+          ${buildMeaningChipGroup('感情', segment.emotion, 'emotion')}
+          ${buildMeaningChipGroup('キーワード', segment.keywords, 'keyword')}
+        </div>
+      `;
+      activeMeaningIndex = normalizedIndex;
+    }
+
+    const closeBtn = ui.meaningPanel.querySelector('.ytm-meaning-close-btn');
+    if (closeBtn) {
+      closeBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        toggleMeaningPanel(false);
+      };
+    }
+  }
+
+  function syncMeaningPanelToPlayback(force = false, preferredTime = null) {
+    if (!meaningPanelVisible || !ui.meaningPanel || !lyricsMeaning) return;
+    const nextIndex = resolveMeaningIndex(preferredTime);
+    if (!force && nextIndex === activeMeaningIndex) return;
+    renderMeaningPanel(nextIndex);
+  }
+
+  function refreshMeaningUi() {
+    const hasMeaning = !!lyricsMeaning;
+
+    if (ui.meaningBtn) {
+      ui.meaningBtn.hidden = !hasMeaning;
+      ui.meaningBtn.classList.toggle('active', !!(hasMeaning && meaningPanelVisible));
+    }
+    if (ui.summaryBtn) {
+      ui.summaryBtn.hidden = !hasMeaning;
+    }
+
+    if (!hasMeaning) {
+      meaningPanelVisible = false;
+      activeMeaningIndex = -1;
+      if (ui.meaningPanel) {
+        ui.meaningPanel.classList.remove('active');
+        ui.meaningPanel.innerHTML = '';
+      }
+      hideMeaningSummaryPopup();
+      return;
+    }
+
+    if (ui.meaningPanel) {
+      ui.meaningPanel.classList.toggle('active', !!meaningPanelVisible);
+      if (meaningPanelVisible) renderMeaningPanel(resolveMeaningIndex());
+    }
+  }
+
+  function setLyricsMeaningData(data) {
+    lyricsMeaning = normalizeMeaningPayloadLocal(data);
+    activeMeaningIndex = -1;
+    refreshMeaningUi();
+  }
+
+  async function persistMeaningDataToCurrentCache() {
+    if (!currentKey || !lyricsMeaning) return;
+    const cached = await storage.get(currentKey);
+    if (cached === NO_LYRICS_SENTINEL) return;
+
+    const base = (cached && typeof cached === 'object')
+      ? cached
+      : ((typeof lastRawLyricsText === 'string' && lastRawLyricsText.trim()) ? { lyrics: lastRawLyricsText } : null);
+
+    if (!base) return;
+    await storage.set(currentKey, { ...base, meaningData: lyricsMeaning });
+  }
+
+  async function fetchMeaningDataFromGithubLocal(videoId, safeFetchText) {
+    if (!videoId || typeof safeFetchText !== 'function') return null;
+    const base = `https://raw.githubusercontent.com/LRCHub/${videoId}/main`;
+    const candidates = [`${base}/EX.txt`, `${base}/ex.txt`];
+    for (const url of candidates) {
+      const text = await safeFetchText(url);
+      const parsed = parseMeaningPayloadTextLocal(text);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
+
+  function toggleMeaningPanel(force) {
+    if (!lyricsMeaning) {
+      showToast('解説データがまだありません');
+      return;
+    }
+
+    meaningPanelVisible = typeof force === 'boolean' ? force : !meaningPanelVisible;
+    if (ui.meaningPanel) {
+      ui.meaningPanel.classList.toggle('active', meaningPanelVisible);
+    }
+    if (ui.meaningBtn) {
+      ui.meaningBtn.classList.toggle('active', meaningPanelVisible);
+    }
+    if (meaningPanelVisible) {
+      syncMeaningPanelToPlayback(true);
+    }
+  }
+
+  function showMeaningSummaryPopup() {
+    if (!lyricsMeaning) {
+      showToast('要約データがまだありません');
+      return;
+    }
+
+    ensureMeaningSummaryDialog();
+    const summary = lyricsMeaning.final_summary || {};
+    const shortText = summary.short || '';
+    const longText = summary.long || shortText || 'この曲の要約データはまだありません。';
+
+    ui.meaningSummaryDialog.innerHTML = `
+      <button class="ytm-meaning-summary-close" type="button" aria-label="Close">×</button>
+      <div class="ytm-meaning-summary-eyebrow">要約</div>
+      <div class="ytm-meaning-summary-title">${escapeHtml(getMeaningDisplayTitle())}</div>
+      ${shortText ? `<p class="ytm-meaning-summary-short">${escapeHtml(shortText)}</p>` : ''}
+      <p class="ytm-meaning-summary-long">${escapeHtml(longText)}</p>
+    `;
+
+    const closeBtn = ui.meaningSummaryDialog.querySelector('.ytm-meaning-summary-close');
+    if (closeBtn) closeBtn.onclick = () => hideMeaningSummaryPopup();
+
+    ui.meaningSummaryBackdrop.classList.add('visible');
+    ui.meaningSummaryDialog.classList.add('visible');
+  }
 
   function setupAutoHideEvents() {
     if (document.body.dataset.autohideSetup) return;
@@ -1558,6 +1919,7 @@ async function applyLyricsText(rawLyrics) {
       lyricsData = [];
       hasTimestamp = false;
       renderLyrics([]);
+      refreshMeaningUi();
       return;
     }
     lastRawLyricsText = rawLyrics;
@@ -1607,6 +1969,8 @@ async function applyLyricsText(rawLyrics) {
 
     lyricsData = finalLines;
     renderLyrics(finalLines);
+    refreshMeaningUi();
+    if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
   }
 
   // ===================== 歌詞候補・ロック関連 =====================
@@ -2295,9 +2659,12 @@ async function applyLyricsText(rawLyrics) {
           lyricsRequests = null;
           lyricsConfig = null;
           lyricsLockState = null;
+          setLyricsMeaningData(null);
+          hideMeaningSummaryPopup();
           renderLyrics([]);
           refreshCandidateMenu();
           refreshLockMenu();
+          refreshMeaningUi();
         }
         toggleDialog(false);
       });
@@ -3080,11 +3447,17 @@ function renderSettingsPanel() {
       ui.wrapper = document.getElementById('ytm-custom-wrapper');
       ui.bg = document.getElementById('ytm-custom-bg');
       ui.lyrics = document.getElementById('my-lyrics-container');
+      ui.meaningPanel = document.getElementById('ytm-meaning-panel');
       ui.title = document.getElementById('ytm-custom-title');
       ui.artist = document.getElementById('ytm-custom-artist');
       ui.artwork = document.getElementById('ytm-artwork-container');
       ui.btnArea = document.getElementById('ytm-btn-area');
+      ui.meaningBtn = document.getElementById('ytm-meaning-btn');
+      ui.summaryBtn = document.getElementById('ytm-meaning-summary-btn');
+      ui.meaningSummaryBackdrop = document.getElementById('ytm-meaning-summary-backdrop');
+      ui.meaningSummaryDialog = document.getElementById('ytm-meaning-summary-dialog');
       setupAutoHideEvents();
+      refreshMeaningUi();
       return;
     }
     ui.bg = createEl('div', 'ytm-custom-bg');
@@ -3099,6 +3472,8 @@ function renderSettingsPanel() {
 
     const btns = [];
     const lyricsBtnConfig = { txt: 'Lyrics', cls: 'lyrics-btn', click: () => { } };
+    const meaningBtnConfig = { txt: '解説', cls: 'meaning-btn', click: () => toggleMeaningPanel() };
+    const summaryBtnConfig = { txt: '要約', cls: 'meaning-summary-btn', click: () => showMeaningSummaryPopup() };
     const shareBtnConfig = { txt: 'Share', cls: 'share-btn', click: onShareButtonClick };
 
     //  PiPボタン
@@ -3139,7 +3514,7 @@ function renderSettingsPanel() {
     };
 
     // ボタン配列に追加
-    btns.push(lyricsBtnConfig, shareBtnConfig, pipBtnConfig, replayBtnConfig, switchBtnConfig, settingsBtnConfig);
+    btns.push(lyricsBtnConfig, meaningBtnConfig, summaryBtnConfig, shareBtnConfig, pipBtnConfig, replayBtnConfig, switchBtnConfig, settingsBtnConfig);
 
     btns.forEach(b => {
       const btn = createEl('button', '', `ytm-glass-btn ${b.cls || ''}`, b.txt);
@@ -3148,6 +3523,14 @@ function renderSettingsPanel() {
       if (b === lyricsBtnConfig) {
         ui.lyricsBtn = btn;
         setupUploadMenu(btn);
+      }
+      if (b === meaningBtnConfig) {
+        btn.id = 'ytm-meaning-btn';
+        ui.meaningBtn = btn;
+      }
+      if (b === summaryBtnConfig) {
+        btn.id = 'ytm-meaning-summary-btn';
+        ui.summaryBtn = btn;
       }
       if (b === shareBtnConfig) {
         ui.shareBtn = btn;
@@ -3172,8 +3555,11 @@ function renderSettingsPanel() {
     info.append(ui.title, ui.artist, ui.btnArea);
     leftCol.append(ui.artwork, info);
     ui.lyrics = createEl('div', 'my-lyrics-container');
-    ui.wrapper.append(leftCol, ui.lyrics);
+    ui.meaningPanel = createEl('aside', 'ytm-meaning-panel', 'ytm-meaning-panel');
+    ui.wrapper.append(leftCol, ui.lyrics, ui.meaningPanel);
     document.body.appendChild(ui.wrapper);
+    ensureMeaningSummaryDialog();
+    refreshMeaningUi();
     setupAutoHideEvents();
     if(isYTMPremiumUser()) setupMovieMode(); //moviemode setup
   }
@@ -3205,6 +3591,7 @@ function renderSettingsPanel() {
     lyricsRequests = null;
     lyricsConfig = null;
     lyricsLockState = null;
+    setLyricsMeaningData(null);
     let data = null;
     let noLyricsCached = false;
     if (cached !== null && cached !== undefined) {
@@ -3222,6 +3609,7 @@ function renderSettingsPanel() {
         if (Array.isArray(cached.requests)) lyricsRequests = cached.requests;
         if (cached.config) lyricsConfig = cached.config;
         if (cached.lockState && typeof cached.lockState === 'object') lyricsLockState = cached.lockState;
+        if (cached.meaningData) setLyricsMeaningData(cached.meaningData);
       }
     }
     syncLyricsLockState();
@@ -3230,6 +3618,7 @@ function renderSettingsPanel() {
     if (!data && noLyricsCached) {
       if (thisKey !== currentKey) return;
       renderLyrics([]);
+      refreshMeaningUi();
       return;
     }
     if (!data && !noLyricsCached) {
@@ -3272,6 +3661,8 @@ const withRandomCacheBusterFast = (url) => {
           // duet: try to fetch sub.txt (optional)
           const subTextFast = await safeFetchText(`${GH_BASE}/sub.txt`);
           if (subTextFast && subTextFast.trim()) duetSubLyricsRaw = subTextFast;
+          const meaningDataFast = await fetchMeaningDataFromGithubLocal(video_id_fast, safeFetchText);
+          if (meaningDataFast) setLyricsMeaningData(meaningDataFast);
 
           const safeFetchJson = async (url) => {
             try {
@@ -3487,7 +3878,8 @@ const withRandomCacheBusterFast = (url) => {
                     dynamicLines: dynLines,
                     noLyrics: false,
                     githubFallback: true,
-                    subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : '')
+                    subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
+                    meaningData: lyricsMeaning || null
                   });
                 }
                 return;
@@ -3507,7 +3899,8 @@ const withRandomCacheBusterFast = (url) => {
                   dynamicLines: null,
                   noLyrics: false,
                   githubFallback: true,
-                  subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : '')
+                  subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
+                  meaningData: lyricsMeaning || null
                 });
               }
               return;
@@ -3537,6 +3930,7 @@ const withRandomCacheBusterFast = (url) => {
         refreshCandidateMenu();
         refreshLockMenu();
         isFallbackLyrics = !!res?.githubFallback;
+        if (res?.meaningData) setLyricsMeaningData(res.meaningData);
         if (typeof res?.subLyrics === 'string' && res.subLyrics.trim()) duetSubLyricsRaw = res.subLyrics;
 
         if (res?.success && typeof res.lyrics === 'string' && res.lyrics.trim()) {
@@ -3550,6 +3944,7 @@ const withRandomCacheBusterFast = (url) => {
               noLyrics: false,
               githubFallback: isFallbackLyrics,
               subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
+              meaningData: lyricsMeaning || null,
               candidates: lyricsCandidates || null,
               requests: lyricsRequests || null,
               config: lyricsConfig || null,
@@ -3572,6 +3967,7 @@ const withRandomCacheBusterFast = (url) => {
       renderLyrics([]);
       refreshCandidateMenu();
       refreshLockMenu();
+      refreshMeaningUi();
       return;
     }
     await applyLyricsText(data);
@@ -3763,6 +4159,9 @@ const optimizeLineBreaks = (text) => {
         if (shareMode) {
           handleShareLineClick(index);
           return;
+        }
+        if (meaningPanelVisible && line && typeof line.time === 'number') {
+          syncMeaningPanelToPlayback(true, line.time);
         }
         if (!hasTimestamp || !line || line.time == null) return;
         const v = document.querySelector('video');
@@ -4005,6 +4404,9 @@ const optimizeLineBreaks = (text) => {
     });
 
     lastActiveIndex = idx;
+    if (meaningPanelVisible) {
+      syncMeaningPanelToPlayback(false, t);
+    }
   }
 
   // ===================== Share 機能 =====================
@@ -4366,6 +4768,8 @@ const optimizeLineBreaks = (text) => {
       lyricsRequests = null;
       lyricsConfig = null;
       lyricsLockState = null;
+      setLyricsMeaningData(null);
+      hideMeaningSummaryPopup();
       shareMode = false;
       shareStartIndex = null;
       shareEndIndex = null;

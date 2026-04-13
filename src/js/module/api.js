@@ -513,8 +513,117 @@ export const fetchCandidateLyrics = async (video_id, candidate_id, candidate) =>
   return '';
 };
 
+export const parseMeaningTimeToSec = (value) => {
+  const s = String(value || '').trim();
+  const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
+  if (!m) return null;
+  const min = Number(m[1]);
+  const sec = Number(m[2]);
+  let frac = m[3] || '0';
+  if (frac.length === 1) frac += '00';
+  else if (frac.length === 2) frac += '0';
+  const ms = Number(frac.slice(0, 3));
+  if (!Number.isFinite(min) || !Number.isFinite(sec) || !Number.isFinite(ms)) return null;
+  return (min * 60) + sec + (ms / 1000);
+};
+
+export const normalizeMeaningPayload = (payload) => {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const timeline = Array.isArray(payload.timeline_meanings)
+    ? payload.timeline_meanings
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const start = typeof item.start === 'string' ? item.start.trim() : '';
+        const end = typeof item.end === 'string' ? item.end.trim() : '';
+        const startSec = parseMeaningTimeToSec(start);
+        const endSec = parseMeaningTimeToSec(end);
+        return {
+          start,
+          end,
+          startSec,
+          endSec,
+          label: typeof item.label === 'string' ? item.label.trim() : '',
+          summary: typeof item.summary === 'string' ? item.summary.trim() : '',
+          detail: typeof item.detail === 'string' ? item.detail.trim() : '',
+          emotion: Array.isArray(item.emotion) ? item.emotion.map(v => String(v || '').trim()).filter(Boolean) : [],
+          keywords: Array.isArray(item.keywords) ? item.keywords.map(v => String(v || '').trim()).filter(Boolean) : [],
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  const finalSummaryRaw = payload.final_summary && typeof payload.final_summary === 'object'
+    ? payload.final_summary
+    : {};
+
+  const finalSummary = {
+    short: typeof finalSummaryRaw.short === 'string' ? finalSummaryRaw.short.trim() : '',
+    long: typeof finalSummaryRaw.long === 'string' ? finalSummaryRaw.long.trim() : '',
+  };
+
+  const hasSummary = !!(finalSummary.short || finalSummary.long);
+  if (!timeline.length && !hasSummary) return null;
+
+  return {
+    title: typeof payload.title === 'string' ? payload.title.trim() : '',
+    timeline_meanings: timeline,
+    final_summary: finalSummary,
+  };
+};
+
+export const parseMeaningPayload = (text) => {
+  const raw = String(text || '').replace(/^\uFEFF/, '').trim();
+  if (!raw) return null;
+
+  const candidates = [];
+  candidates.push(raw);
+
+  const fenceMatch = raw.match(/```(?:json|txt|text)?\s*([\s\S]*?)```/i);
+  if (fenceMatch && fenceMatch[1]) {
+    candidates.push(fenceMatch[1].trim());
+  }
+
+  const firstBrace = raw.indexOf('{');
+  const lastBrace = raw.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(raw.slice(firstBrace, lastBrace + 1).trim());
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      const normalized = normalizeMeaningPayload(parsed);
+      if (normalized) return normalized;
+    } catch (e) {
+    }
+  }
+
+  return null;
+};
+
+export const fetchGithubMeaning = async (video_id, bust) => {
+  if (!video_id) return null;
+  const base = `https://raw.githubusercontent.com/LRCHub/${video_id}/main`;
+  const urls = [`${base}/EX.txt`, `${base}/ex.txt`];
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(typeof bust === 'function' ? bust(url) : withRandomCacheBuster(url), { cache: 'no-store' });
+      if (!res.ok) continue;
+      const text = await res.text();
+      const parsed = parseMeaningPayload(text);
+      if (parsed) return parsed;
+    } catch (e) {
+    }
+  }
+
+  return null;
+};
+
 export const fetchFromGithub = (video_id) => {
-  if (!video_id) return Promise.resolve({ lyrics: '', dynamicLines: null, subLyrics: '', candidates: [] });
+  if (!video_id) return Promise.resolve({ lyrics: '', dynamicLines: null, subLyrics: '', candidates: [], meaningData: null });
 
   const base = `https://raw.githubusercontent.com/LRCHub/${video_id}/main`;
   const __cacheBuster = (1000 + Math.floor(Math.random() * 9000));
@@ -532,6 +641,7 @@ export const fetchFromGithub = (video_id) => {
 
   const pSub = safeFetchText(`${base}/sub.txt`);
   const pSelectCandidates = fetchGithubSelectCandidates(video_id, bust);
+  const pMeaning = fetchGithubMeaning(video_id, bust);
 
   const parseLrcTimeToMs = (ts) => {
     const s = String(ts || '').trim();
@@ -657,19 +767,19 @@ export const fetchFromGithub = (video_id) => {
   };
 
   return (async () => {
-    const [subLyrics, selectCandidates] = await Promise.all([pSub, pSelectCandidates]);
+    const [subLyrics, selectCandidates, meaningData] = await Promise.all([pSub, pSelectCandidates, pMeaning]);
 
     const dynText = await safeFetchText(`${base}/Dynamic.lrc`);
     const dynLines = parseDynamicLrc(dynText);
     if (dynLines && dynLines.length) {
       const lyrics = buildLrcFromDynamic(dynLines);
-      if (lyrics && lyrics.trim()) return { lyrics, dynamicLines: dynLines, subLyrics: subLyrics || '', candidates: selectCandidates || [] };
+      if (lyrics && lyrics.trim()) return { lyrics, dynamicLines: dynLines, subLyrics: subLyrics || '', candidates: selectCandidates || [], meaningData: meaningData || null };
     }
 
     const readme = await safeFetchText(`${base}/README.md`);
     const lyrics = extractLyricsFromReadme(readme);
 
-    return { lyrics: lyrics || '', dynamicLines: null, subLyrics: subLyrics || '', candidates: selectCandidates || [] };
+    return { lyrics: lyrics || '', dynamicLines: null, subLyrics: subLyrics || '', candidates: selectCandidates || [], meaningData: meaningData || null };
   })();
 };;
 
