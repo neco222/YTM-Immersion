@@ -147,12 +147,17 @@
 
   let config = {
     deepLKey: null,
+    useTrans: true,
     mode: true,
+    mainLang: 'original',
+    subLang: 'en',
     uiLang: 'ja',
     syncOffset: 0,
     saveSyncOffset: false,
+    useSharedTranslateApi: false,
     leftAlignInfo: false,
-    appleBg: true
+    appleBg: true,
+    useLrcLibFallback: true
   };
 
   // フォールバック言語
@@ -177,6 +182,10 @@
       replay_lyrics_heard: "累計行数",
       settings_title: "設定",
       settings_ui_lang: "UI言語 / Language",
+      settings_trans: "歌詞翻訳機能を使う",
+      settings_shared_trans: "共有翻訳を使う（APIキー不要）",
+      settings_main_lang: "メイン言語 (大きく表示)",
+      settings_sub_lang: "サブ言語 (小さく表示)",
       settings_save: "保存",
       settings_reset: "リセット",
       settings_saved: "設定を保存しました",
@@ -205,6 +214,10 @@
       replay_lyrics_heard: "Total lines",
       settings_title: "Settings",
       settings_ui_lang: "UI Language / Language",
+      settings_trans: "Enable lyrics translation",
+      settings_shared_trans: "Use shared translation (no API key required)",
+      settings_main_lang: "Main language (large)",
+      settings_sub_lang: "Sub language (small)",
       settings_save: "Save",
       settings_reset: "Reset",
       settings_saved: "Settings saved",
@@ -233,11 +246,15 @@
       replay_lyrics_heard: "누적 행 수",
       settings_title: "설정",
       settings_ui_lang: "UI 언어 / Language",
+      settings_trans: "가사 번역 기능 사용",
+      settings_shared_trans: "공유 번역 사용 (API 키 불필요)",
+      settings_main_lang: "메인 언어 (크게 표시)",
+      settings_sub_lang: "서브 언어 (작게 표시)",
       settings_save: "저장",
       settings_reset: "초기화",
       settings_saved: "설정을 저장했습니다",
       settings_sync_offset: "가사 동기 오프셋",
-      settings_sync_offset_save: "곡이 바뀌어도 오프셋을 초기화하지 않기",
+      settings_sync_offset_save: "곡이 바뀌어도 오프셋을 초기화하지 않기"
     },
     zh: {
       unit_hour: "小时",
@@ -259,31 +276,25 @@
       replay_lyrics_heard: "累计行数",
       settings_title: "设置",
       settings_ui_lang: "UI 语言 / Language",
+      settings_trans: "启用歌词翻译",
+      settings_shared_trans: "使用共享翻译（无需 API 密钥）",
+      settings_main_lang: "主语言（大号显示）",
+      settings_sub_lang: "副语言（小号显示）",
       settings_save: "保存",
       settings_reset: "重置",
       settings_saved: "已保存设置",
       settings_sync_offset: "歌词同步偏移",
-      settings_sync_offset_save: "切歌时不重置偏移",
+      settings_sync_offset_save: "切歌时不重置偏移"
     }
   }; 
   
   
-  let UI_TEXTS = null;
-
-
   const t = (key) => {
     const lang = config.uiLang || 'ja';
-
-
-    const remoteTable =
-      (UI_TEXTS && UI_TEXTS[lang]) ||
-      (UI_TEXTS && UI_TEXTS['ja']) ||
-      null;
 
     const localLangTable = LOCAL_FALLBACK_TEXTS[lang] || {};
     const localJaTable = LOCAL_FALLBACK_TEXTS['ja'] || {};
 
-    if (remoteTable && remoteTable[key]) return remoteTable[key];
     if (localLangTable && localLangTable[key]) return localLangTable[key];
     if (localJaTable && localJaTable[key]) return localJaTable[key];
     return key;
@@ -292,28 +303,13 @@
 
 
 
-  const REMOTE_TEXTS_URL =
-    'https://raw.githubusercontent.com/naikaku1/YTM-Modern-UI/main/src/lang/ui.json';
-
-  let remoteTextsLoaded = false;
-
   // 言語コード
   function getLangDisplayName(code) {
-    if (UI_TEXTS && UI_TEXTS[code]) {
-      const metaName = UI_TEXTS[code].lang_name || UI_TEXTS[code].__name;
-      if (metaName) return metaName;
-    }
     if (code === 'ja') return '日本語';
     if (code === 'en') return 'English';
     if (code === 'ko') return '한국어';
+    if (code === 'zh') return 'Chinese';
     return code;
-  }
-
-  function mergeRemoteTexts(remote) {
-    if (!remote || typeof remote !== 'object') return;
-    UI_TEXTS = remote;
-    remoteTextsLoaded = true;
-    refreshUiLangGroup();
   }
 
 
@@ -328,9 +324,7 @@
     group.innerHTML = '';
 
 
-    const langs = UI_TEXTS
-      ? Object.keys(UI_TEXTS)
-      : Object.keys(LOCAL_FALLBACK_TEXTS);
+    const langs = Object.keys(LOCAL_FALLBACK_TEXTS);
 
     if (!langs.length) return;
 
@@ -445,33 +439,6 @@
       config.uiLang = v;
       renderSettingsPanel(); //設定パネルを即時変更
     });
-  }
-
-
-  // GitHub から TEXTS を読む
-  async function loadRemoteTextsFromGithub() {
-    try {
-      const res = await fetch(REMOTE_TEXTS_URL, { cache: 'no-store' });
-      if (!res.ok) {
-        console.warn('[UI TEXTS] HTTP error:', res.status);
-        return;
-      }
-      const raw = await res.text();
-
-      let obj = null;
-      try {
-        // ui.json は純粋な JSON
-        obj = JSON.parse(raw);
-      } catch (e) {
-        console.warn('[UI TEXTS] JSON.parse failed for ui.json', e);
-        return;
-      }
-
-      mergeRemoteTexts(obj);
-      console.log('[UI TEXTS] remote languages loaded:', Object.keys(obj));
-    } catch (e) {
-      console.warn('[UI TEXTS] failed to load remote texts:', e);
-    }
   }
 
   window.chrome = window.chrome || EXT;

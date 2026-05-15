@@ -1,11 +1,23 @@
+  const resolveDeepLTargetLang = (lang) => {
+    switch ((lang || '').toLowerCase()) {
+      case 'en': case 'en-us': case 'en-gb': return 'EN';
+      case 'ja': return 'JA';
+      case 'ko': return 'KO';
+      case 'fr': return 'FR';
+      case 'de': return 'DE';
+      case 'es': return 'ES';
+      case 'zh': case 'zh-cn': case 'zh-tw': return 'ZH';
+      default: return 'JA';
+    }
+  };
 
   const parseLRCInternal = (lrc) => {
     if (!lrc) return { lines: [], hasTs: false };
     const tagTest = /\[\d{2}:\d{2}\.\d{2,3}\]/;
 
-    // 繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励′縺ｪ縺・ｴ蜷・
+    // タイムスタンプがない場合
     if (!tagTest.test(lrc)) {
-      // 遨ｺ陦後ｂ菫晄戟縺励※縲∫ｿｻ險ｳ譎ゅ↓陦後′隧ｰ縺ｾ繧峨↑縺・ｈ縺・↓縺吶ｋ
+      // 空行も保持して、翻訳時に行が詰まらないようにする
       const lines = lrc.split(/\r?\n/).map(line => {
         const text = (line ?? '').replace(/^\s+|\s+$/g, '');
         return { time: null, text };
@@ -13,7 +25,7 @@
       return { lines, hasTs: false };
     }
 
-    // 繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励′縺ゅｋ蝣ｴ蜷・
+    // タイムスタンプがある場合
     const tagExp = /\[(\d{2}):(\d{2})\.(\d{2,3})\]/g;
     const result = [];
     let match;
@@ -40,12 +52,12 @@
       lastIndex = tagExp.lastIndex;
     }
 
-    // 譛蠕後・陦後・蜃ｦ逅・
+    // 最後の行の処理
     if (lastTime !== null && lastIndex < lrc.length) {
       const rawText = lrc.slice(lastIndex);
       const cleaned = rawText.replace(/\r?\n/g, ' ');
       const text = cleaned.trim();
-      // 笘・ｿｮ豁｣: 遨ｺ陦・譏守､ｺ逧・↑謾ｹ陦後・縺ｿ)繧ゆｿ晄戟縺励※繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励・繧ｺ繝ｬ繧帝亟縺・
+      // ★修正: 空行(明示的な改行のみ)も保持してタイムスタンプのズレを防ぐ
       const hasLineBreak = /[\r\n]/.test(rawText);
       if (text || hasLineBreak) {
         result.push({ time: lastTime, text });
@@ -79,7 +91,7 @@
   const normalizeLyricCompareText = (text) => String(text || '')
     .replace(/\u00A0/g, ' ')
     .replace(/\s+/g, '')
-    .replace(/[\p{P}\p{S}\p{C}]/gu, '')
+    .replace(/[.,，。!！?？:：;；'"\-‐‑‒–—―~〜()（）\[\]{}<>「」『』【】]/g, '')
     .toLowerCase()
     .trim();
 
@@ -269,8 +281,8 @@
     return picked.dynLine;
   };
 
-  // 繧ｳ繝ｳ繝・Φ繝・・繝・メ縺ｧDynamic LRC陦後ｒ謗｢縺呻ｼ域凾髢薙′螟ｧ縺阪￥縺壹ｌ縺ｦ縺・ｋ蝣ｴ蜷医・1譁・ｭ怜酔譛溷ｯｾ蠢懃畑・・
-  // timeTolerance: 遘貞腰菴阪・險ｱ螳ｹ蟷・・譁・ｭ怜酔譛溘・蝣ｴ蜷医・5.0遘呈耳螂ｨ縲・
+  // コンテンツマッチでDynamic LRC行を探す（時間が大きくずれている場合の1文字同期対応用）
+  // timeTolerance: 秒単位の許容幅。1文字同期の場合は5.0秒推奨。
   const findDynamicLineByContent = (line, sourceLines, timeTolerance = 5.0) => {
     if (!line || !Array.isArray(sourceLines) || !sourceLines.length) return null;
     const wantedText = normalizeLyricCompareTextStrict(line.text);
@@ -290,7 +302,7 @@
       if (score <= 0) return;
 
       const timeDiff = typeof line.time === 'number' ? Math.abs(startSec - line.time) : 0;
-      // 蜷後せ繧ｳ繧｢縺ｪ繧画凾髢薙′霑代＞譁ｹ繧貞━蜈・
+      // 同スコアなら時間が近い方を優先
       if (score > bestScore || (score === bestScore && timeDiff < bestTimeDiff)) {
         bestScore = score;
         bestTimeDiff = timeDiff;
@@ -298,11 +310,11 @@
       }
     });
 
-    // 螳悟・荳閾ｴ(100)縺ｮ縺ｿ謗｡逕ｨ: 驛ｨ蛻・ｸ閾ｴ(60)縺縺ｨ譁・ｭ玲焚繝ｻ蜀・ｮｹ縺碁＆縺・ョ繝ｼ繧ｿ縺悟ｽ薙◆繧願ｪ､陦ｨ遉ｺ縺ｮ蜴溷屏縺ｫ縺ｪ繧・
+    // 完全一致(100)のみ採用: 部分一致(60)だと文字数・内容が違うデータが当たり誤表示の原因になる
     return bestScore >= 100 ? bestMatch : null;
   };
 
-  // Dynamic.lrc蠖｢蠑上・繝代・繧ｵ繝ｼ・・ub.txt逕ｨ・・
+  // Dynamic.lrc形式のパーサー（sub.txt用）
   const parseDynamicLrcForSub = (text) => {
     const out = [];
     if (!text) return out;
@@ -418,67 +430,67 @@
     return out;
   };
 
-  // Dynamic.lrc蠖｢蠑上°縺ｩ縺・°繧貞愛螳・
+  // Dynamic.lrc形式かどうかを判定
   const isDynamicLrcFormat = (text) => {
     if (!text) return false;
-    // <00:00.00>蠖｢蠑上・繧ｿ繧ｰ縺悟性縺ｾ繧後※縺・ｌ縺ｰDynamic.lrc蠖｢蠑・
+    // <00:00.00>形式のタグが含まれていればDynamic.lrc形式
     return /<\d+:\d{2}(?:\.\d{1,3})?>/.test(text);
   };
 
   const parseSubLRC = (lrc) => {
-    // Dynamic.lrc蠖｢蠑上・蝣ｴ蜷医・蟆ら畑繝代・繧ｵ繝ｼ繧剃ｽｿ逕ｨ
+    // Dynamic.lrc形式の場合は専用パーサーを使用
     if (isDynamicLrcFormat(lrc)) {
       const dynLines = parseDynamicLrcForSub(lrc);
       if (dynLines && dynLines.length) {
-        // dynamicLines縺九ｉLRC蠖｢蠑上・lines縺ｫ螟画鋤
+        // dynamicLinesからLRC形式のlinesに変換
         const lines = dynLines.map(dl => ({
           time: (typeof dl.startTimeMs === 'number') ? dl.startTimeMs / 1000 : null,
           text: dl.text || '',
         }));
-        // 繧ｵ繝也畑縺ｮdynamicLines繧剃ｿ晏ｭ・
+        // サブ用のdynamicLinesを保存
         duetSubDynamicLines = dynLines;
         return { lines, hasTs: true, dynamicLines: dynLines };
       }
     }
     
-    // 騾壼ｸｸ縺ｮLRC蠖｢蠑・
+    // 通常のLRC形式
     duetSubDynamicLines = null;
     const { lines, hasTs } = parseLRCInternal(lrc);
     return { lines: Array.isArray(lines) ? lines : [], hasTs: !!hasTs, dynamicLines: null };
   };
 
   const mergeDuetLines = (mainLines, subLines) => {
-    // 繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励・險ｱ螳ｹ隱､蟾ｮ (遘・
+    // タイムスタンプの許容誤差 (秒)
     const TIME_TOLERANCE = 0.5;
 
     const subLinesWithTime = (subLines || []).filter(l => typeof l?.time === 'number');
     
-    // 繧ｵ繝匁ｭ瑚ｩ槭・繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励そ繝・ヨ繧剃ｽ懈・・磯ｫ倬滓､懃ｴ｢逕ｨ・・
+    // サブ歌詞のタイムスタンプセットを作成（高速検索用）
     const subTimeSet = new Set();
     subLinesWithTime.forEach(sub => {
-      // 險ｱ螳ｹ隱､蟾ｮ繧定・・縺励※縲・.1遘貞綾縺ｿ縺ｧ繧ｭ繝ｼ繧定ｿｽ蜉
+      // 許容誤差を考慮して、0.1秒刻みでキーを追加
       const baseMs = Math.round(sub.time * 10);
       for (let i = -5; i <= 5; i++) {
         subTimeSet.add(baseMs + i);
       }
     });
 
-    // sub豁瑚ｩ槭→譎る俣縺瑚｢ｫ繧九Γ繧､繝ｳ豁瑚ｩ槭ｒ髯､螟悶☆繧・
-    // 縺ｾ縺溘・勁螟悶＆繧後◆繝｡繧､繝ｳ豁瑚ｩ槭・繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励ｒ險倬鹸
+    // sub歌詞と時間が被るメイン歌詞を除外する
+    // また、除外されたメイン歌詞のタイムスタンプを記録
     const excludedMainTimes = new Set();
     const filteredMain = (mainLines || []).filter(l => {
       if (typeof l?.time !== 'number') return true;
-      // 譎る俣縺瑚ｿ台ｼｼ縺励※縺・ｋ繧ｵ繝匁ｭ瑚ｩ槭′縺ゅｋ縺九メ繧ｧ繝・け
+      // 時間が近似しているサブ歌詞があるかチェック
       const keyMs = Math.round(l.time * 10);
       const collision = subTimeSet.has(keyMs);
       if (collision) {
-        excludedMainTimes.add(Math.round(l.time * 1000)); // 繝溘Μ遘堤ｲｾ蠎ｦ縺ｧ險倬鹸
+        excludedMainTimes.add(Math.round(l.time * 1000)); // ミリ秒精度で記録
       }
       return !collision;
     });
     
-    // dynamicLines縺九ｉ繧る勁螟悶＆繧後◆繝｡繧､繝ｳ陦後↓蟇ｾ蠢懊☆繧九ｂ縺ｮ繧帝勁螟・
-    // ・医げ繝ｭ繝ｼ繝舌Ν螟画焚dynamicLines繧堤峩謗･螟画峩縺帙★縲√ヵ繧｣繝ｫ繧ｿ逕ｨ縺ｮ繧ｻ繝・ヨ繧剃ｿ晏ｭ假ｼ・
+    // dynamicLinesからも除外されたメイン行に対応するものを除外
+    // （グローバル変数dynamicLinesを直接変更せず、フィルタ用のセットを保存）
     _duetExcludedTimes = excludedMainTimes;
 
     _duetExcludedTimes = excludedMainTimes;
@@ -495,7 +507,7 @@
       const at = (typeof a.time === 'number') ? a.time : Number.POSITIVE_INFINITY;
       const bt = (typeof b.time === 'number') ? b.time : Number.POSITIVE_INFINITY;
       
-      // 譎る俣縺後⊇縺ｼ蜷後§蝣ｴ蜷医・縲´eft(繝｡繧､繝ｳ) -> Right(繧ｵ繝・ 縺ｮ鬆・↓荳ｦ縺ｹ繧・
+      // 時間がほぼ同じ場合は、Left(メイン) -> Right(サブ) の順に並べる
       if (Math.abs(at - bt) < 0.05) {
         const ap = a.duetSide === 'right' ? 1 : 0;
         const bp = b.duetSide === 'right' ? 1 : 0;
@@ -511,8 +523,8 @@
     const subLinesWithTime = (subLines || []).filter(l => typeof l?.time === 'number');
     const excludedMainTimes = new Set();
 
-    // Dynamic LRC・・譁・ｭ怜酔譛滂ｼ峨′縺ゅｋ蝣ｴ蜷医・5遘偵・險ｱ螳ｹ蟷・蜀・ｮｹ荳閾ｴ縺ｧ驥崎､・愛螳・
-    // 騾壼ｸｸLRC縺ｯ繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励′邊ｾ遒ｺ縺ｪ縺ｮ縺ｧ螳悟・荳閾ｴ・・AME_TIMESTAMP_TOLERANCE=0.05s・峨・縺ｿ驥崎､・→縺ｿ縺ｪ縺・
+    // Dynamic LRC（1文字同期）がある場合は5秒の許容幅+内容一致で重複判定
+    // 通常LRCはタイムスタンプが精確なので完全一致（SAME_TIMESTAMP_TOLERANCE=0.05s）のみ重複とみなす
     const hasDynamicLrc = Array.isArray(dynamicLines) && dynamicLines.length > 0;
     const dedupeTimeTolerance = hasDynamicLrc ? 5.0 : SAME_TIMESTAMP_TOLERANCE;
 
@@ -522,7 +534,7 @@
       const mainText = normalizeLyricCompareTextStrict(mainLine.text);
       if (!mainText) return true;
 
-      // dedupeTimeTolerance莉･蜀・・繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝怜ｷｮ縺九▽蜷御ｸ繝・く繧ｹ繝医・繧ｵ繝冶｡後′縺ゅｌ縺ｰ驥崎､・→縺ｿ縺ｪ縺励※繝｡繧､繝ｳ陦後ｒ髯､螟・
+      // dedupeTimeTolerance以内のタイムスタンプ差かつ同一テキストのサブ行があれば重複とみなしてメイン行を除外
       const duplicateSub = subLinesWithTime.find((subLine) => {
         if (!isSameTimestamp(mainLine.time, subLine.time, dedupeTimeTolerance)) return false;
         const subText = normalizeLyricCompareTextStrict(subLine.text);
@@ -565,7 +577,7 @@
       }
 
       if (duplicateIdx >= 0) {
-        // 蜷悟・螳ｹ縺ｮ驥崎､・□縺題誠縺ｨ縺吶ょ挨豁瑚ｩ槭・蜷梧凾騾ｲ陦後・谿九☆縲・
+        // 同内容の重複だけ落とす。別歌詞の同時進行は残す。
         if (prev?.duetSide === 'left' && line?.duetSide === 'right') {
           deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
         }
@@ -600,19 +612,19 @@
   const getDynamicLineForTime = (sec) => {
     if (!dynamicLines || !Array.isArray(dynamicLines) || !dynamicLines.length) return null;
     
-    // 繝・Η繧ｨ繝・ヨ繝｢繝ｼ繝峨〒髯､螟悶＆繧後◆繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励°繝√ぉ繝・け
+    // デュエットモードで除外されたタイムスタンプかチェック
     const isDuetMode = document.body.classList.contains('ytm-duet-mode');
     if (isDuetMode && _duetExcludedTimes && _duetExcludedTimes.size > 0) {
       const secMs = Math.round(sec * 1000);
-      // 險ｱ螳ｹ隱､蟾ｮ50ms莉･蜀・〒髯､螟悶＆繧後◆繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励ｒ繝√ぉ繝・け
+      // 許容誤差50ms以内で除外されたタイムスタンプをチェック
       for (let offset = -50; offset <= 50; offset += 10) {
         if (_duetExcludedTimes.has(secMs + offset)) {
-          return null; // 縺薙・繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝励・sub.txt縺ｧ荳頑嶌縺阪＆繧後※縺・ｋ縺ｮ縺ｧ辟｡隕・
+          return null; // このタイムスタンプはsub.txtで上書きされているので無視
         }
       }
     }
 
-    // 繝槭ャ繝励く繝｣繝・す繝･縺ｮ蜀肴ｧ狗ｯ会ｼ亥盾辣ｧ縺悟､峨ｏ縺｣縺滓凾縺ｮ縺ｿ・・
+    // マップキャッシュの再構築（参照が変わった時のみ）
     if (_dynMapSrc !== dynamicLines) {
       _dynMapSrc = dynamicLines;
       _dynMap = new Map();
@@ -635,11 +647,11 @@
       });
     }
 
-    // 1. 螳悟・荳閾ｴ繝医Λ繧､
+    // 1. 完全一致トライ
     const exact = _dynMap?.get(timeKey(sec));
     if (exact) return exact;
 
-    // 2. 霑台ｼｼ蛟､繝医Λ繧､ (蜑榊ｾ・.15遘・
+    // 2. 近似値トライ (前後0.15秒)
     const TOLERANCE = 0.15;
     const found = dynamicLines.find(dl => {
        let startS = 0;
@@ -651,14 +663,14 @@
     return found || null;
   };
 
-  // 繧ｵ繝悶・繝ｼ繧ｫ繝ｫ逕ｨ縺ｮdynamicLine蜿門ｾ暦ｼ・ub.txt縺ｮDynamic.lrc蟇ｾ蠢懶ｼ・
+  // サブボーカル用のdynamicLine取得（sub.txtのDynamic.lrc対応）
   let _subDynMapSrc = null;
   let _subDynMap = null;
   
   const getSubDynamicLineForTime = (sec) => {
     if (!duetSubDynamicLines || !Array.isArray(duetSubDynamicLines) || !duetSubDynamicLines.length) return null;
     
-    // 繝槭ャ繝励く繝｣繝・す繝･縺ｮ蜀肴ｧ狗ｯ会ｼ亥盾辣ｧ縺悟､峨ｏ縺｣縺滓凾縺ｮ縺ｿ・・
+    // マップキャッシュの再構築（参照が変わった時のみ）
     if (_subDynMapSrc !== duetSubDynamicLines) {
       _subDynMapSrc = duetSubDynamicLines;
       _subDynMap = new Map();
@@ -681,11 +693,11 @@
       });
     }
 
-    // 1. 螳悟・荳閾ｴ繝医Λ繧､
+    // 1. 完全一致トライ
     const exact = _subDynMap?.get(timeKey(sec));
     if (exact) return exact;
 
-    // 2. 霑台ｼｼ蛟､繝医Λ繧､ (蜑榊ｾ・.15遘・
+    // 2. 近似値トライ (前後0.15秒)
     const TOLERANCE = 0.15;
     const found = duetSubDynamicLines.find(dl => {
        let startS = 0;
@@ -970,6 +982,188 @@
     return parseLRCInternal(lrc).lines;
   };
 
+  const normalizeStr = (s) => (s || '').replace(/\s+/g, '').trim();
+
+  const isMixedLang = (s) => {
+    if (!s) return false;
+    const hasLatin = /[A-Za-z]/.test(s);
+    const hasCJK = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(s);
+    const hasHangul = /[\uAC00-\uD7AF]/.test(s);
+    let kinds = 0;
+    if (hasLatin) kinds++;
+    if (hasCJK) kinds++;
+    if (hasHangul) kinds++;
+    return kinds >= 2;
+  };
+
+  const detectCharScript = (ch) => {
+    if (!ch) return 'OTHER';
+    if (/[A-Za-z]/.test(ch)) return 'LATIN';
+    if (/[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(ch)) return 'CJK';
+    if (/[\uAC00-\uD7AF]/.test(ch)) return 'HANGUL';
+    return 'OTHER';
+  };
+
+  const segmentByScript = (s) => {
+    const result = [];
+    if (!s) return result;
+    let currentScript = null;
+    let buf = '';
+    for (const ch of s) {
+      const script = detectCharScript(ch);
+      if (currentScript === null) {
+        currentScript = script;
+        buf = ch;
+      } else if (script === currentScript) {
+        buf += ch;
+      } else {
+        result.push({ script: currentScript, text: buf });
+        currentScript = script;
+        buf = ch;
+      }
+    }
+    if (buf) {
+      result.push({ script: currentScript, text: buf });
+    }
+    return result;
+  };
+
+  const shouldTranslateSegment = (script, langCode) => {
+    const lang = (langCode || '').toLowerCase();
+    if (script === 'OTHER') return false;
+    switch (lang) {
+      case 'ja': return script === 'LATIN' || script === 'HANGUL';
+      case 'en': return script === 'CJK' || script === 'HANGUL';
+      case 'ko': return script === 'LATIN' || script === 'CJK';
+      default: return script !== 'LATIN';
+    }
+  };
+
+  const translateMixedSegments = async (lines, indexes, langCode, targetLang) => {
+    try {
+      const segmentsToTranslate = [];
+      const perLineSegments = {};
+      indexes.forEach(idx => {
+        const line = lines[idx];
+        const text = (line && line.text) || '';
+        const segs = segmentByScript(text);
+        const segMeta = [];
+        segs.forEach(seg => {
+          if (shouldTranslateSegment(seg.script, langCode)) {
+            const translateIndex = segmentsToTranslate.length;
+            segmentsToTranslate.push(seg.text);
+            segMeta.push({ original: seg.text, translateIndex });
+          } else {
+            segMeta.push({ original: seg.text, translateIndex: null });
+          }
+        });
+        perLineSegments[idx] = segMeta;
+      });
+      if (!segmentsToTranslate.length) return null;
+      const res = await new Promise(resolve => {
+        chrome.runtime.sendMessage(
+          { type: 'TRANSLATE', payload: { text: segmentsToTranslate, apiKey: config.deepLKey, targetLang, useSharedTranslateApi: (config.useSharedTranslateApi) } },
+          resolve
+        );
+      });
+      if (!res?.success || !Array.isArray(res.translations) || res.translations.length !== segmentsToTranslate.length) {
+        return null;
+      }
+      const segTranslations = res.translations.map(t => t.text || '');
+      const result = {};
+      Object.keys(perLineSegments).forEach(key => {
+        const lineIdx = Number(key);
+        const segMeta = perLineSegments[lineIdx];
+        let rebuilt = '';
+        segMeta.forEach(seg => {
+          if (seg.translateIndex == null) {
+            rebuilt += seg.original;
+          } else {
+            rebuilt += segTranslations[seg.translateIndex] ?? seg.original;
+          }
+        });
+        result[lineIdx] = rebuilt;
+      });
+      return result;
+    } catch (e) {
+      console.error('DeepL mixed-line fallback failed', e);
+      return null;
+    }
+  };
+
+  const dedupePrimarySecondary = (lines) => {
+    if (!Array.isArray(lines)) return lines;
+    lines.forEach(l => {
+      if (!l.translation) return;
+      const src = normalizeStr(l.text);
+      const trn = normalizeStr(l.translation);
+      if (src === trn && !isMixedLang(l.text)) {
+        delete l.translation;
+      }
+    });
+    return lines;
+  };
+
+  const translateTo = async (lines, langCode) => {
+    if ((!config.deepLKey && !(config.useSharedTranslateApi)) || !lines.length) return null;
+    const targetLang = resolveDeepLTargetLang(langCode);
+    try {
+      const baseTexts = lines.map(l => (l && l.text !== undefined && l.text !== null) ? String(l.text) : '');
+      // 空行は翻訳APIへ送らず、行数だけ保持してタイムスタンプのズレを防ぐ
+      const mapIdx = [];
+      const requestTexts = [];
+      for (let i = 0; i < baseTexts.length; i++) {
+        const t = baseTexts[i];
+        if ((t || '').trim()) {
+          mapIdx.push(i);
+          requestTexts.push(t);
+        }
+      }
+
+      let translated = new Array(lines.length).fill('');
+
+      if (requestTexts.length) {
+        const res = await new Promise(resolve => {
+          chrome.runtime.sendMessage(
+            { type: 'TRANSLATE', payload: { text: requestTexts, apiKey: config.deepLKey, targetLang, useSharedTranslateApi: (config.useSharedTranslateApi) } },
+            resolve
+          );
+        });
+
+        if (!res?.success || !Array.isArray(res.translations) || res.translations.length !== requestTexts.length) {
+          return null;
+        }
+
+        for (let i = 0; i < mapIdx.length; i++) {
+          const tr = res.translations[i];
+          translated[mapIdx[i]] = (tr && tr.text) ? tr.text : '';
+        }
+      }
+      const fallbackIndexes = [];
+      for (let i = 0; i < lines.length; i++) {
+        const src = baseTexts[i];
+        const trn = translated[i];
+        if (!src) continue;
+        if (normalizeStr(src) === normalizeStr(trn) && isMixedLang(src)) {
+          fallbackIndexes.push(i);
+        }
+      }
+      if (fallbackIndexes.length) {
+        const mixedFallback = await translateMixedSegments(lines, fallbackIndexes, langCode, targetLang);
+        if (mixedFallback) {
+          fallbackIndexes.forEach(i => {
+            if (mixedFallback[i]) translated[i] = mixedFallback[i];
+          });
+        }
+      }
+      return translated;
+    } catch (e) {
+      console.error('DeepL failed', e);
+    }
+    return null;
+  };
+
+
   const getMetadata = () => {
     // Prefer MediaSession metadata (most accurate)
     if (navigator.mediaSession?.metadata) {
@@ -988,7 +1182,7 @@
     if (!(tEl && aEl)) return null;
 
     const parts = (aEl.textContent || '')
-      .split('窶｢')
+      .split('•')
       .map(s => (s || '').trim())
       .filter(Boolean);
 
@@ -1021,8 +1215,8 @@
     }
   };
 
-  // === BG 縺九ｉ縺ｮ蠕瑚ｿｽ縺・Γ繧ｿ譖ｴ譁ｰ・磯≦縺・婿蠕・■繧偵ｄ繧√◆譎ら畑・・==
-  // GitHub 縺ｧ蜈医↓豁瑚ｩ槭□縺題ｿ斐▲縺ｦ縺阪◆蠕後↓縲´RCHub 蛛ｴ縺ｮ candidates/config/requests 縺梧擂縺溘ｉ UI 繧呈峩譁ｰ縺吶ｋ
+  // === BG からの後追いメタ更新（遅い方待ちをやめた時用）===
+  // Metadata can arrive after lyrics; refresh related UI when it does.
   chrome.runtime.onMessage.addListener((msg) => {
     try {
       if (!msg || typeof msg !== 'object') return;
@@ -1036,7 +1230,7 @@
       if (Array.isArray(p.requests)) lyricsRequests = p.requests;
       syncLyricsLockState();
 
-      // duet: sub lyrics can arrive later (GitHub)
+      // duet: sub lyrics can arrive later
       if (typeof p.subLyrics === 'string') {
         duetSubLyricsRaw = p.subLyrics;
         // re-render with same raw lyrics to avoid showing duplicate left+right lines
@@ -1045,16 +1239,21 @@
         }
       }
 
-      // dynamic: char-timed lines can arrive later (GitHub) even if lyrics came from API
+      // dynamic: char-timed lines can arrive later even if lyrics came from API
       if (Array.isArray(p.dynamicLines) && p.dynamicLines.length) {
         dynamicLines = p.dynamicLines;
-        // re-render to attach per-char spans while keeping current lines
+        // re-render to attach per-char spans while keeping current lines/translations
         if (Array.isArray(lyricsData) && lyricsData.length) {
           renderLyrics(lyricsData);
         }
       }
 
-      // candidates/config 縺梧峩譁ｰ縺輔ｌ縺溘ｉ繝｡繝九Η繝ｼ繧貞・謠冗判
+      // candidates/config が更新されたらメニューを再描画
+      if (p.meaningData) {
+        setLyricsMeaningData(p.meaningData);
+        persistMeaningDataToCurrentCache().catch(() => { });
+        if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
+      }
 
       refreshCandidateMenu();
       refreshLockMenu();
@@ -1093,16 +1292,542 @@
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+  const parseMeaningTimeToSecLocal = (value) => {
+    const s = String(value || '').trim();
+    const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
+    if (!m) return null;
+    const min = Number(m[1]);
+    const sec = Number(m[2]);
+    let frac = m[3] || '0';
+    if (frac.length === 1) frac += '00';
+    else if (frac.length === 2) frac += '0';
+    const ms = Number(frac.slice(0, 3));
+    if (!Number.isFinite(min) || !Number.isFinite(sec) || !Number.isFinite(ms)) return null;
+    return (min * 60) + sec + (ms / 1000);
+  };
+
+  const normalizeMeaningPayloadLocal = (payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+
+    // Handle new LRCHub "explanations" format
+    const rawTimeline = Array.isArray(payload.explanations) ? payload.explanations : (Array.isArray(payload.timeline_meanings) ? payload.timeline_meanings : []);
+
+    const timeline = rawTimeline
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        
+        // Map from either new LRCHub spec or old spec
+        const start = String(item.start_time || item.start || '').trim();
+        const end = String(item.end_time || item.end || '').trim();
+        
+        const startSec = (typeof item.start_ms === 'number') ? item.start_ms / 1000 : parseMeaningTimeToSecLocal(start);
+        const endSec = (typeof item.end_ms === 'number') ? item.end_ms / 1000 : parseMeaningTimeToSecLocal(end);
+
+        return {
+          start,
+          end,
+          startSec,
+          endSec,
+          label: String(item.lyrics || item.label || '').trim(),
+          summary: String(item.summary || '').trim(),
+          detail: String(item.meaning || item.detail || '').trim(),
+          emotion: Array.isArray(item.emotion) ? item.emotion.map(v => String(v || '').trim()).filter(Boolean) : [],
+          keywords: Array.isArray(item.keywords) ? item.keywords.map(v => String(v || '').trim()).filter(Boolean) : [],
+        };
+      })
+      .filter(Boolean);
+
+    const finalSummaryRaw = payload.final_summary && typeof payload.final_summary === 'object'
+      ? payload.final_summary
+      : {};
+    const finalSummary = {
+      short: typeof finalSummaryRaw.short === 'string' ? finalSummaryRaw.short.trim() : '',
+      long: typeof finalSummaryRaw.long === 'string' ? finalSummaryRaw.long.trim() : '',
+    };
+
+    if (!timeline.length && !finalSummary.short && !finalSummary.long) return null;
+
+    return {
+      title: typeof payload.title === 'string' ? payload.title.trim() : '',
+      timeline_meanings: timeline,
+      final_summary: finalSummary,
+    };
+  };
+
+  const parseMeaningPayloadTextLocal = (text) => {
+    const raw = String(text || '').replace(/^\uFEFF/, '').trim();
+    if (!raw) return null;
+
+    const candidates = [raw];
+    const fenced = raw.match(/```(?:json|txt|text)?\s*([\s\S]*?)```/i);
+    if (fenced && fenced[1]) candidates.push(fenced[1].trim());
+    const firstBrace = raw.indexOf('{');
+    const lastBrace = raw.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      candidates.push(raw.slice(firstBrace, lastBrace + 1).trim());
+    }
+
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      try {
+        const parsed = JSON.parse(candidate);
+        const normalized = normalizeMeaningPayloadLocal(parsed);
+        if (normalized) return normalized;
+      } catch (e) {
+      }
+    }
+
+    return null;
+  };
+
+  const getMeaningSegments = () => (
+    lyricsMeaning && Array.isArray(lyricsMeaning.timeline_meanings)
+      ? lyricsMeaning.timeline_meanings
+      : []
+  );
+
+  const getCurrentPlaybackTimeSec = () => {
+    const v = document.querySelector('video');
+    if (!v || typeof v.currentTime !== 'number' || Number.isNaN(v.currentTime)) return null;
+    let t = v.currentTime;
+    if (!(timeOffset > 0 && t < timeOffset)) {
+      t = Math.max(0, t - timeOffset);
+    }
+    const duration = Number.isFinite(v.duration) ? v.duration : null;
+    t = Math.max(0, t + (config.syncOffset / 1000));
+    if (typeof duration === 'number' && duration > 0) {
+      t = Math.min(t, duration);
+    }
+    return t;
+  };
+
+  const findMeaningIndexByTime = (timeSec) => {
+    const segments = getMeaningSegments();
+    if (!segments.length) return -1;
+    if (typeof timeSec !== 'number' || Number.isNaN(timeSec)) return 0;
+
+    let fallbackIndex = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      const startSec = typeof segment.startSec === 'number' ? segment.startSec : null;
+      const endSec = typeof segment.endSec === 'number' ? segment.endSec : null;
+
+      if (startSec != null && timeSec + 0.12 >= startSec) {
+        fallbackIndex = i;
+      }
+      if ((startSec == null || timeSec + 0.12 >= startSec) &&
+          (endSec == null || timeSec <= endSec + 0.12)) {
+        return i;
+      }
+      if (startSec != null && timeSec < startSec) {
+        break;
+      }
+    }
+
+    return fallbackIndex;
+  };
+
+  const resolveMeaningIndex = (preferredTime = null) => {
+    const segments = getMeaningSegments();
+    if (!segments.length) return -1;
+    if (typeof preferredTime === 'number' && !Number.isNaN(preferredTime)) {
+      return findMeaningIndexByTime(preferredTime);
+    }
+    if (lastActiveIndex >= 0 && lyricsData[lastActiveIndex] && typeof lyricsData[lastActiveIndex].time === 'number') {
+      return findMeaningIndexByTime(lyricsData[lastActiveIndex].time);
+    }
+    const now = getCurrentPlaybackTimeSec();
+    if (typeof now === 'number') return findMeaningIndexByTime(now);
+    return 0;
+  };
+
+  const buildMeaningChipGroup = (label, values, kind) => {
+    if (!Array.isArray(values) || !values.length) return '';
+    const chips = values.map((value) => `<span class="ytm-meaning-chip ${kind}">${escapeHtml(value)}</span>`).join('');
+    return `<div class="ytm-meaning-chip-group"><div class="ytm-meaning-chip-label">${escapeHtml(label)}</div><div class="ytm-meaning-chip-list">${chips}</div></div>`;
+  };
+
+  const getMeaningDisplayTitle = () => {
+    const raw = (lyricsMeaning && lyricsMeaning.title) || ui.title?.textContent || 'Song Meaning';
+    return String(raw || 'Song Meaning').trim();
+  };
+
+  function hideMeaningSummaryPopup() {
+    if (ui.meaningSummaryBackdrop) ui.meaningSummaryBackdrop.classList.remove('visible');
+    if (ui.meaningSummaryDialog) ui.meaningSummaryDialog.classList.remove('visible');
+  }
+
+  function ensureMeaningSummaryDialog() {
+    if (ui.meaningSummaryBackdrop && ui.meaningSummaryDialog) return;
+
+    const backdrop = createEl('div', 'ytm-meaning-summary-backdrop', 'ytm-meaning-summary-backdrop');
+    const dialog = createEl('div', 'ytm-meaning-summary-dialog', 'ytm-meaning-summary-dialog');
+    backdrop.appendChild(dialog);
+    backdrop.addEventListener('click', (ev) => {
+      if (ev.target === backdrop) hideMeaningSummaryPopup();
+    });
+    document.body.appendChild(backdrop);
+    ui.meaningSummaryBackdrop = backdrop;
+    ui.meaningSummaryDialog = dialog;
+
+    if (!meaningSummaryGlobalSetup) {
+      meaningSummaryGlobalSetup = true;
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') hideMeaningSummaryPopup();
+      });
+    }
+  }
+
+  function renderMeaningPanel(index = null) {
+    if (!ui.meaningPanel) return;
+
+    const normalizedIndex = typeof index === 'number' ? index : resolveMeaningIndex();
+    const segments = getMeaningSegments();
+    const segment = normalizedIndex >= 0 ? segments[normalizedIndex] : null;
+    const summary = lyricsMeaning && lyricsMeaning.final_summary ? lyricsMeaning.final_summary : { short: '', long: '' };
+
+    if (!lyricsMeaning) {
+      ui.meaningPanel.innerHTML = '';
+      ui.meaningPanel.classList.remove('active');
+      activeMeaningIndex = -1;
+      return;
+    }
+
+    if (!segment) {
+      const fallbackText = summary.long || summary.short || 'この曲の解説データはまだありません。';
+      ui.meaningPanel.innerHTML = `
+        <div class="ytm-meaning-panel-head">
+          <div>
+            <div class="ytm-meaning-panel-eyebrow">解説</div>
+            <div class="ytm-meaning-panel-title">${escapeHtml(getMeaningDisplayTitle())}</div>
+          </div>
+          <button class="ytm-meaning-close-btn" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="ytm-meaning-panel-body">
+          <p class="ytm-meaning-panel-text">${escapeHtml(fallbackText)}</p>
+        </div>
+      `;
+      activeMeaningIndex = -1;
+    } else {
+      ui.meaningPanel.innerHTML = `
+        <div class="ytm-meaning-panel-head">
+          <div>
+            <div class="ytm-meaning-panel-eyebrow">解説</div>
+            <div class="ytm-meaning-panel-range">${escapeHtml(segment.start || '--:--')} - ${escapeHtml(segment.end || '--:--')}</div>
+            <div class="ytm-meaning-panel-title">${escapeHtml(segment.label || 'Lyric Meaning')}</div>
+          </div>
+          <button class="ytm-meaning-close-btn" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="ytm-meaning-panel-body">
+          ${segment.summary ? `<p class="ytm-meaning-panel-summary">${escapeHtml(segment.summary)}</p>` : ''}
+          ${segment.detail ? `<p class="ytm-meaning-panel-text">${escapeHtml(segment.detail)}</p>` : ''}
+          ${buildMeaningChipGroup('感情', segment.emotion, 'emotion')}
+          ${buildMeaningChipGroup('キーワード', segment.keywords, 'keyword')}
+        </div>
+      `;
+      activeMeaningIndex = normalizedIndex;
+    }
+
+    const closeBtn = ui.meaningPanel.querySelector('.ytm-meaning-close-btn');
+    if (closeBtn) {
+      closeBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        toggleMeaningPanel(false);
+      };
+    }
+  }
+
+  function syncMeaningPanelToPlayback(force = false, preferredTime = null) {
+    if (!meaningPanelVisible || !ui.meaningPanel || !lyricsMeaning) return;
+    const nextIndex = resolveMeaningIndex(preferredTime);
+    if (!force && nextIndex === activeMeaningIndex) return;
+    renderMeaningPanel(nextIndex);
+  }
+
+  function refreshMeaningUi() {
+    const hasMeaning = !!lyricsMeaning;
+
+    if (ui.meaningBtn) {
+      ui.meaningBtn.hidden = !hasMeaning;
+      ui.meaningBtn.classList.toggle('active', !!(hasMeaning && meaningPanelVisible));
+    }
+    if (ui.summaryBtn) {
+      ui.summaryBtn.hidden = !hasMeaning;
+    }
+
+    if (!hasMeaning) {
+      meaningPanelVisible = false;
+      activeMeaningIndex = -1;
+      if (ui.meaningPanel) {
+        ui.meaningPanel.classList.remove('active');
+        ui.meaningPanel.innerHTML = '';
+      }
+      hideMeaningSummaryPopup();
+      return;
+    }
+
+    if (ui.meaningPanel) {
+      ui.meaningPanel.classList.toggle('active', !!meaningPanelVisible);
+      if (meaningPanelVisible) renderMeaningPanel(resolveMeaningIndex());
+    }
+  }
+
+  function setLyricsMeaningData(data) {
+    lyricsMeaning = normalizeMeaningPayloadLocal(data);
+    activeMeaningIndex = -1;
+    refreshMeaningUi();
+  }
+
+  async function persistMeaningDataToCurrentCache() {
+    if (!currentKey || !lyricsMeaning) return;
+    const cached = await storage.get(currentKey);
+    if (cached === NO_LYRICS_SENTINEL) return;
+
+    const base = (cached && typeof cached === 'object')
+      ? cached
+      : ((typeof lastRawLyricsText === 'string' && lastRawLyricsText.trim()) ? { lyrics: lastRawLyricsText } : null);
+
+    if (!base) return;
+    await storage.set(currentKey, { ...base, meaningData: lyricsMeaning });
+  }
+
+
+  function toggleMeaningPanel(force) {
+    if (!lyricsMeaning) {
+      showToast('解説データがまだありません');
+      return;
+    }
+
+    meaningPanelVisible = typeof force === 'boolean' ? force : !meaningPanelVisible;
+    if (ui.meaningPanel) {
+      ui.meaningPanel.classList.toggle('active', meaningPanelVisible);
+    }
+    if (ui.meaningBtn) {
+      ui.meaningBtn.classList.toggle('active', meaningPanelVisible);
+    }
+    if (meaningPanelVisible) {
+      syncMeaningPanelToPlayback(true);
+    }
+  }
+
+  function showMeaningSummaryPopup() {
+    if (!lyricsMeaning) {
+      showToast('要約データがまだありません');
+      return;
+    }
+
+    ensureMeaningSummaryDialog();
+    const summary = lyricsMeaning.final_summary || {};
+    const shortText = summary.short || '';
+    const longText = summary.long || shortText || 'この曲の要約データはまだありません。';
+
+    ui.meaningSummaryDialog.innerHTML = `
+      <button class="ytm-meaning-summary-close" type="button" aria-label="Close">×</button>
+      <div class="ytm-meaning-summary-eyebrow">要約</div>
+      <div class="ytm-meaning-summary-title">${escapeHtml(getMeaningDisplayTitle())}</div>
+      ${shortText ? `<p class="ytm-meaning-summary-short">${escapeHtml(shortText)}</p>` : ''}
+      <p class="ytm-meaning-summary-long">${escapeHtml(longText)}</p>
+    `;
+
+    const closeBtn = ui.meaningSummaryDialog.querySelector('.ytm-meaning-summary-close');
+    if (closeBtn) closeBtn.onclick = () => hideMeaningSummaryPopup();
+
+    ui.meaningSummaryBackdrop.classList.add('visible');
+    ui.meaningSummaryDialog.classList.add('visible');
+  }
+
   function setupAutoHideEvents() {
     if (document.body.dataset.autohideSetup) return;
     ['mousemove', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, handleInteraction));
     document.body.dataset.autohideSetup = 'true';
     handleInteraction();
   }
+
+  function setupScrollResumeEvents() {
+    if (!ui.lyrics) return;
+    
+    const handleUserScroll = () => {
+      if (isProgrammaticScrolling) {
+        // プログラムスクロール中は、完了までタイムアウトを延長
+        clearTimeout(programmaticScrollTimeout);
+        programmaticScrollTimeout = setTimeout(() => {
+          isProgrammaticScrolling = false;
+        }, 150);
+        return;
+      }
+      
+      isUserScrolling = true;
+      clearTimeout(userScrollTimeout);
+      userScrollTimeout = setTimeout(() => {
+        isUserScrolling = false;
+        lastScrolledIndex = -1; // 復帰時に強制スクロールさせるためリセット
+      }, 3000);
+    };
+
+    ui.lyrics.addEventListener('scroll', handleUserScroll, { passive: true });
+  }
   
 
-  // ===================== 豁瑚ｩ橸ｼ狗ｿｻ險ｳ驕ｩ逕ｨ =====================
+  // ===================== 歌詞＋翻訳適用 =====================
 
+  async function applyTranslations(baseLines, youtubeUrl) {
+    if (!config.useTrans || !Array.isArray(baseLines) || !baseLines.length) return baseLines;
+    const mainLangStored = await storage.get('ytm_main_lang');
+    const subLangStored = await storage.get('ytm_sub_lang');
+    if (mainLangStored) config.mainLang = mainLangStored;
+    if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
+    const mainLang = config.mainLang || 'original';
+    const subLang = config.subLang || '';
+    const langsToFetch = [];
+    if (mainLang && mainLang !== 'original') langsToFetch.push(mainLang);
+    if (subLang && subLang !== 'original' && subLang !== mainLang && subLang) langsToFetch.push(subLang);
+    if (!langsToFetch.length) return baseLines;
+
+    let lrcMap = {};
+    try {
+      const res = await new Promise(resolve => {
+        chrome.runtime.sendMessage({
+          type: 'GET_TRANSLATION',
+          payload: { youtube_url: youtubeUrl, langs: langsToFetch }
+        }, resolve);
+      });
+      if (res?.success && res.lrcMap) lrcMap = res.lrcMap;
+    } catch (e) {
+      console.warn('GET_TRANSLATION failed', e);
+    }
+
+    const transLinesByLang = {};
+    const needDeepL = [];
+
+    langsToFetch.forEach(lang => {
+      const lrc = (lrcMap && lrcMap[lang]) || '';
+      if (lrc) {
+        const parsed = parseLRCNoFlag(lrc);
+        transLinesByLang[lang] = parsed;
+      } else {
+        needDeepL.push(lang);
+      }
+    });
+
+    if (needDeepL.length &&  (config.deepLKey || (config.useSharedTranslateApi)) ) {
+      for (const lang of needDeepL) {
+        const translatedTexts = await translateTo(baseLines, lang);
+        if (translatedTexts && translatedTexts.length === baseLines.length) {
+          const lines = baseLines.map((l, i) => ({
+            time: l.time,
+            text: translatedTexts[i]
+          }));
+          transLinesByLang[lang] = lines;
+          const plain = translatedTexts.join('\n');
+          if (plain.trim()) {
+            chrome.runtime.sendMessage({
+              type: 'REGISTER_TRANSLATION',
+              payload: { youtube_url: youtubeUrl, lang, lyrics: plain }
+            }, (res) => {
+              console.log('[CS] REGISTER_TRANSLATION', lang, res);
+            });
+          }
+        }
+      }
+    }
+
+    const alignedMap = buildAlignedTranslations(baseLines, transLinesByLang);
+    const final = baseLines.map(l => ({ ...l }));
+    const getLangTextAt = (langCode, index, baseText) => {
+      if (!langCode || langCode === 'original') return baseText;
+      const arr = alignedMap[langCode];
+      if (!arr) return baseText;
+      const v = arr[index];
+      return (v === null || v === undefined) ? baseText : v;
+    };
+
+    for (let i = 0; i < final.length; i++) {
+      const baseText = final[i].text;
+      let primary = getLangTextAt(mainLang, i, baseText);
+      let secondary = null;
+      if (subLang && subLang !== mainLang) {
+        secondary = getLangTextAt(subLang, i, baseText);
+      } else if (!subLang && mainLang !== 'original') {
+        if (normalizeStr(primary) !== normalizeStr(baseText)) {
+          secondary = baseText;
+        }
+      }
+      if (secondary && normalizeStr(primary) === normalizeStr(secondary)) {
+        if (!isMixedLang(baseText)) secondary = null;
+      }
+      final[i].text = primary;
+      if (secondary) final[i].translation = secondary;
+      else delete final[i].translation;
+    }
+    dedupePrimarySecondary(final);
+    return final;
+  }
+
+  const buildAlignedTranslations = (baseLines, transLinesByLang) => {
+    const alignedMap = {};
+    const TOL = 0.15;
+    Object.keys(transLinesByLang).forEach(lang => {
+      const arr = transLinesByLang[lang];
+      const res = new Array(baseLines.length).fill(null);
+      if (!Array.isArray(arr) || !arr.length) {
+        alignedMap[lang] = res;
+        return;
+      }
+      const hasAnyTime = arr.some(x => x && typeof x.time === 'number');
+      if (!hasAnyTime) {
+        // タイムスタンプ無しの翻訳は「空行を消費しない」方式で合わせる
+        let k = 0;
+        for (let i = 0; i < baseLines.length; i++) {
+          const baseTextRaw = (baseLines[i]?.text ?? '');
+          const isEmptyBaseLine = typeof baseTextRaw === 'string' && baseTextRaw.trim() === '';
+          if (isEmptyBaseLine) { res[i] = ''; continue; }
+          const cand = arr[k];
+          if (cand && typeof cand.text === 'string') {
+            const trimmed = cand.text.trim();
+            res[i] = trimmed === '' ? '' : trimmed;
+          } else {
+            res[i] = '';
+          }
+          k++;
+        }
+        alignedMap[lang] = res;
+        return;
+      }
+      let j = 0;
+      for (let i = 0; i < baseLines.length; i++) {
+        const baseLine = baseLines[i] || {};
+        const tBase = baseLine.time;
+        const baseTextRaw = (baseLine.text ?? '');
+        const isEmptyBaseLine = typeof baseTextRaw === 'string' && baseTextRaw.trim() === '';
+        if (isEmptyBaseLine) {
+          res[i] = '';
+          continue;
+        }
+        if (typeof tBase !== 'number') {
+          const cand = arr[i];
+          if (cand && typeof cand.text === 'string') {
+            const raw = cand.text;
+            const trimmed = raw.trim();
+            res[i] = trimmed === '' ? '' : trimmed;
+          }
+          continue;
+        }
+        while (j < arr.length && typeof arr[j].time === 'number' && arr[j].time < tBase - TOL) {
+          j++;
+        }
+        if (j < arr.length && typeof arr[j].time === 'number' && Math.abs(arr[j].time - tBase) <= TOL) {
+          const raw = (arr[j].text ?? '');
+          const trimmed = raw.trim();
+          res[i] = trimmed === '' ? '' : trimmed;
+          j++;
+        }
+      }
+      alignedMap[lang] = res;
+    });
+    return alignedMap;
+  };
+
+  
   // ===================== Dynamic line post-processing =====================
   // Some providers return Dynamic lyrics in "word chunks" (e.g. each char item is a whole word).
   // We normalize them into true character-level timings by distributing each chunk's duration
@@ -1214,17 +1939,19 @@ async function applyLyricsText(rawLyrics) {
       lyricsData = [];
       hasTimestamp = false;
       renderLyrics([]);
+      refreshMeaningUi();
       return;
     }
     lastRawLyricsText = rawLyrics;
     let parsed = parseBaseLRC(rawLyrics);
+    const videoUrl = getCurrentVideoUrl();
 
     // duet: if sub.txt exists, hide (filter) the normal lines that match sub timestamps,
     // and render the sub lines on the right.
     let baseLines = parsed;
     let hasDuetSub = false;
     
-    // 繝・Η繧ｨ繝・ヨ繝｢繝ｼ繝峨・繝ｪ繧ｻ繝・ヨ・・ub.txt縺後↑縺・ｴ蜷医・髯､螟悶ち繧､繝繧ｹ繧ｿ繝ｳ繝励ｂ繧ｯ繝ｪ繧｢・・
+    // デュエットモードのリセット（sub.txtがない場合は除外タイムスタンプもクリア）
     _duetExcludedTimes = new Set();
     
     if (typeof duetSubLyricsRaw === 'string' && duetSubLyricsRaw.trim()) {
@@ -1240,6 +1967,15 @@ async function applyLyricsText(rawLyrics) {
     document.body.classList.toggle('ytm-duet-mode', hasDuetSub);
 
     let finalLines = baseLines;
+    if (config.useTrans) {
+      const translated = await applyTranslations(baseLines, videoUrl);
+      // applyTranslations rebuilds objects, so re-attach duetSide by index
+      if (Array.isArray(translated) && Array.isArray(baseLines) && translated.length === baseLines.length) {
+        finalLines = translated.map((l, i) => ({ ...l, duetSide: baseLines[i]?.duetSide }));
+      } else {
+        finalLines = translated;
+      }
+    }
     if (keyAtStart !== currentKey) return;
 
     finalLines = collapseCrossSideDuplicateLyrics(finalLines);
@@ -1253,9 +1989,11 @@ async function applyLyricsText(rawLyrics) {
 
     lyricsData = finalLines;
     renderLyrics(finalLines);
+    refreshMeaningUi();
+    if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
   }
 
-  // ===================== 豁瑚ｩ槫呵｣懊・繝ｭ繝・け髢｢騾｣ =====================
+  // ===================== 歌詞候補・ロック関連 =====================
 
   const getCandidateId = (cand, idx = 0) => {
     if (!cand || typeof cand !== 'object') return String(idx);
@@ -1263,7 +2001,7 @@ async function applyLyricsText(rawLyrics) {
   };
 
   const buildCandidateLabel = (cand, idx = 0) => {
-    if (!cand || typeof cand !== 'object') return `蛟呵｣・{idx + 1}`;
+    if (!cand || typeof cand !== 'object') return `候補${idx + 1}`;
 
     const rawName = (
       cand.file ||
@@ -1278,7 +2016,7 @@ async function applyLyricsText(rawLyrics) {
     );
 
     const normalized = String(rawName || '').trim().replace(/\\/g, '/');
-    const labelText = normalized ? normalized.split('/').pop() : `蛟呵｣・{idx + 1}`;
+    const labelText = normalized ? normalized.split('/').pop() : `候補${idx + 1}`;
     return labelText;
   };
 
@@ -1506,23 +2244,23 @@ async function applyLyricsText(rawLyrics) {
 
     if (lineEl) {
       if (info.line) lineEl.textContent = info.line;
-      else if (hoverPreviewLoading) lineEl.textContent = '蛟呵｣懊・豁瑚ｩ槭ョ繝ｼ繧ｿ繧定ｪｭ縺ｿ霎ｼ縺ｿ荳ｭ...';
-      else lineEl.textContent = '縺薙・蛟呵｣懊・豁瑚ｩ槭ョ繝ｼ繧ｿ繧定｡ｨ遉ｺ縺ｧ縺阪∪縺帙ｓ縺ｧ縺励◆';
+      else if (hoverPreviewLoading) lineEl.textContent = '候補の歌詞データを読み込み中...';
+      else lineEl.textContent = 'この候補の歌詞データを表示できませんでした';
     }
 
     if (metaEl) {
       const parts = [];
-      if (typeof currentSeconds === 'number') parts.push(`蜀咲函菴咲ｽｮ ${formatPreviewTime(currentSeconds)}`);
-      if (info.total > 0 && info.lineIndex >= 0) parts.push(`陦・${info.lineIndex + 1}/${info.total}`);
-      if (info.mode === 'timestamp') parts.push('蛟呵｣懆・霄ｫ縺ｮ蜷梧悄菴咲ｽｮ');
-      else if (info.mode === 'current-line-index') parts.push('current line');
-      else if (info.mode === 'progress-ratio') parts.push('playback position');
-      else if (info.mode === 'plain-first') parts.push('蜈磯ｭ陦後ｒ陦ｨ遉ｺ');
+      if (typeof currentSeconds === 'number') parts.push(`再生位置 ${formatPreviewTime(currentSeconds)}`);
+      if (info.total > 0 && info.lineIndex >= 0) parts.push(`行 ${info.lineIndex + 1}/${info.total}`);
+      if (info.mode === 'timestamp') parts.push('候補自身の同期位置');
+      else if (info.mode === 'current-line-index') parts.push('現在の表示行に追従');
+      else if (info.mode === 'progress-ratio') parts.push('再生率から推定');
+      else if (info.mode === 'plain-first') parts.push('先頭行を表示');
       metaEl.textContent = parts.join(' / ');
     }
 
     if (currentEl) {
-      currentEl.textContent = currentLine ? `迴ｾ蝨ｨ陦ｨ遉ｺ荳ｭ: ${currentLine}` : '';
+      currentEl.textContent = currentLine ? `現在表示中: ${currentLine}` : '';
     }
 
     updateCandidateHoverPreviewPosition(hoverPreviewMouseX, hoverPreviewMouseY);
@@ -1583,7 +2321,7 @@ async function applyLyricsText(rawLyrics) {
       cand = await ensureCandidateLyricsLoaded(candId);
     }
     if (!cand || typeof cand.lyrics !== 'string' || !cand.lyrics.trim()) {
-      showToast('縺薙・蛟呵｣懊・豁瑚ｩ槭ョ繝ｼ繧ｿ繧定ｪｭ縺ｿ霎ｼ繧√∪縺帙ｓ縺ｧ縺励◆');
+      showToast('この候補の歌詞データを読み込めませんでした');
       return;
     }
     selectedCandidateId = candId;
@@ -1638,8 +2376,8 @@ async function applyLyricsText(rawLyrics) {
     if (key === 'lock_current_dynamic') return 'dynamic';
 
     const label = String(req.label || '').toLowerCase();
-    if (label.includes('lock dynamic') || label.includes('dynamic') || label.includes('蜍輔￥')) return 'dynamic';
-    if (label.includes('lock sync') || label.includes('sync') || label.includes('蜷梧悄') || label.includes('readme')) return 'sync';
+    if (label.includes('lock dynamic') || label.includes('dynamic') || label.includes('動く')) return 'dynamic';
+    if (label.includes('lock sync') || label.includes('sync') || label.includes('同期') || label.includes('readme')) return 'sync';
 
     return null;
   }
@@ -1762,8 +2500,8 @@ async function applyLyricsText(rawLyrics) {
       if (mergedRequests.some(r => String(r.request || r.id || '').toLowerCase() === idLower)) return;
       mergedRequests.push({ request: id, label, target });
     };
-    ensureRequest('lock_current_sync', '蜷梧悄豁瑚ｩ槭ｒ遒ｺ螳・(Lock sync)', 'sync');
-    ensureRequest('lock_current_dynamic', '蜍輔￥豁瑚ｩ槭ｒ遒ｺ螳・(Lock dynamic)', 'dynamic');
+    ensureRequest('lock_current_sync', '同期歌詞を確定 (Lock sync)', 'sync');
+    ensureRequest('lock_current_dynamic', '動く歌詞を確定 (Lock dynamic)', 'dynamic');
     const activeReqs = mergedRequests.filter(r => {
       if (!r) return false;
       if (r.has_lyrics) return true;
@@ -1781,11 +2519,11 @@ async function applyLyricsText(rawLyrics) {
         btn.className = 'ytm-upload-menu-item';
         btn.dataset.action = 'lock-request';
         btn.dataset.requestId = r.request || r.id || '';
-        btn.textContent = r.label || r.request || r.id || 'Confirm lyrics';
+        btn.textContent = r.label || r.request || r.id || '歌詞を確定';
         const locked = isLockRequestLocked(r, lockState);
         if (locked) {
           btn.classList.add('ytm-upload-menu-item-disabled');
-          btn.title = 'Already confirmed';
+          btn.title = 'すでに確定された歌詞です';
         }
         lockList.appendChild(btn);
       });
@@ -1793,8 +2531,8 @@ async function applyLyricsText(rawLyrics) {
     const shouldDisableAddSync = !!lockState?.sync && !!lockState?.dynamic;
     addSyncBtn.classList.toggle('ytm-upload-menu-item-disabled', shouldDisableAddSync);
     if (shouldDisableAddSync) {
-      addSyncBtn.dataset.disabledMessage = 'Already confirmed';
-      addSyncBtn.title = 'Already confirmed';
+      addSyncBtn.dataset.disabledMessage = 'すでに確定された歌詞です';
+      addSyncBtn.title = 'すでに確定された歌詞です';
     } else {
       delete addSyncBtn.dataset.disabledMessage;
       addSyncBtn.title = '';
@@ -1810,23 +2548,18 @@ async function applyLyricsText(rawLyrics) {
       <div class="ytm-upload-menu-title">Lyrics</div>
       <button class="ytm-upload-menu-item" data-action="local">
         <span class="ytm-upload-menu-item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align: -0.15em; margin-right: 6px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg></span>
-        <span>繝ｭ繝ｼ繧ｫ繝ｫ豁瑚ｩ櫁ｪｭ縺ｿ霎ｼ縺ｿ / ReadLyrics</span>
+        <span>ローカル歌詞読み込み / ReadLyrics</span>
       </button>
       <button class="ytm-upload-menu-item" data-action="add-sync">
         <span class="ytm-upload-menu-item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align: -0.15em; margin-right: 6px;"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg></span>
-        <span>豁瑚ｩ槫酔譛溘ｒ霑ｽ蜉 / AddTiming</span>
+        <span>歌詞同期を追加 / AddTiming</span>
       </button>
       <div class="ytm-upload-menu-locks" style="display:none;">
-        <div class="ytm-upload-menu-subtitle">豁瑚ｩ槭ｒ遒ｺ螳・/ Confirm</div>
+        <div class="ytm-upload-menu-subtitle">歌詞を確定 / Confirm</div>
         <div class="ytm-upload-menu-lock-list"></div>
       </div>
-      <div class="ytm-upload-menu-separator"></div>
-      <button class="ytm-upload-menu-item" data-action="fix">
-        <span class="ytm-upload-menu-item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align: -0.15em; margin-right: 6px;"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg></span>
-        <span>豁瑚ｩ槭・髢馴＆縺・ｒ菫ｮ豁｣ / FixLyrics</span>
-      </button>
       <div class="ytm-upload-menu-candidates" style="display:none;">
-        <div class="ytm-upload-menu-subtitle">蛻･縺ｮ豁瑚ｩ槭ｒ驕ｸ謚・/div>
+        <div class="ytm-upload-menu-subtitle">別の歌詞を選択</div>
         <div class="ytm-upload-menu-candidate-list"></div>
       </div>
     `;
@@ -1847,7 +2580,7 @@ async function applyLyricsText(rawLyrics) {
       const target = ev.target.closest('.ytm-upload-menu-item');
       if (!target) return;
       if (target.classList.contains('ytm-upload-menu-item-disabled')) {
-        const msg = target.dataset.disabledMessage || '縺薙・謫堺ｽ懊・迴ｾ蝨ｨ蛻ｩ逕ｨ縺ｧ縺阪∪縺帙ｓ';
+        const msg = target.dataset.disabledMessage || 'この操作は現在利用できません';
         showToast(msg);
         return;
       }
@@ -1863,14 +2596,6 @@ async function applyLyricsText(rawLyrics) {
         const base = 'https://lrchub.coreone.work';
         const lrchubUrl = videoUrl ? `${base}/manual?video_url=${encodeURIComponent(videoUrl)}` : base;
         window.open(lrchubUrl, '_blank');
-      } else if (action === 'fix') {
-        const vid = getCurrentVideoId();
-        if (!vid) {
-          alert('Video ID could not be detected. Please run this on a YouTube Music playback page.');
-          return;
-        }
-        const githubUrl = `https://github.com/LRCHub/${vid}/edit/main/README.md`;
-        window.open(githubUrl, '_blank');
       } else if (action === 'candidate' && candId) {
         selectCandidateById(candId);
       } else if (action === 'lock-request' && reqId) {
@@ -1885,7 +2610,6 @@ async function applyLyricsText(rawLyrics) {
         if (!ui.uploadMenu.classList.contains('visible')) return;
         if (ui.uploadMenu.contains(ev.target) || uploadBtn.contains(ev.target)) return;
         ui.uploadMenu.classList.remove('visible');
-        hideCandidateHoverPreview();
       }, true);
     }
     refreshCandidateMenu();
@@ -1896,14 +2620,14 @@ async function applyLyricsText(rawLyrics) {
     if (!ui.btnArea || ui.deleteDialog) return;
     ui.btnArea.style.position = 'relative';
     const dialog = createEl('div', 'ytm-delete-dialog', 'ytm-confirm-dialog', `
-      <div class="ytm-confirm-title">豁瑚ｩ槭ｒ蜑企勁</div>
+      <div class="ytm-confirm-title">歌詞を削除</div>
       <div class="ytm-confirm-message">
-        縺薙・譖ｲ縺ｮ菫晏ｭ俶ｸ医∩豁瑚ｩ槭ｒ蜑企勁縺励∪縺吶°・・br>
-        <span style="font-size:11px;opacity:0.7;">繝ｭ繝ｼ繧ｫ繝ｫ繧ｭ繝｣繝・す繝･縺ｮ縺ｿ蜑企勁縺輔ｌ縺ｾ縺吶・/span>
+        この曲の保存済み歌詞を削除しますか？<br>
+        <span style="font-size:11px;opacity:0.7;">ローカルキャッシュのみ削除されます。</span>
       </div>
       <div class="ytm-confirm-buttons">
-        <button class="ytm-confirm-btn cancel">繧ｭ繝｣繝ｳ繧ｻ繝ｫ</button>
-        <button class="ytm-confirm-btn danger">蜑企勁</button>
+        <button class="ytm-confirm-btn cancel">キャンセル</button>
+        <button class="ytm-confirm-btn danger">削除</button>
       </div>
     `);
     ui.btnArea.appendChild(dialog);
@@ -1941,9 +2665,12 @@ async function applyLyricsText(rawLyrics) {
           lyricsRequests = null;
           lyricsConfig = null;
           lyricsLockState = null;
+          setLyricsMeaningData(null);
+          hideMeaningSummaryPopup();
           renderLyrics([]);
           refreshCandidateMenu();
           refreshLockMenu();
+          refreshMeaningUi();
         }
         toggleDialog(false);
       });
@@ -1984,8 +2711,17 @@ async function applyLyricsText(rawLyrics) {
     ui.settings = createEl('div', 'ytm-settings-panel', '', ``);
     document.body.appendChild(ui.settings);
 
-    await loadRemoteTextsFromGithub();
+    if (!config.deepLKey) config.deepLKey = await storage.get('ytm_deepl_key');
+    const cachedTrans = await storage.get('ytm_trans_enabled');
+    if (cachedTrans !== null && cachedTrans !== undefined) config.useTrans = cachedTrans;
 
+    const cachedSharedTrans = await storage.get('ytm_shared_trans_enabled');
+    if (cachedSharedTrans !== null && cachedSharedTrans !== undefined) config.useSharedTranslateApi = cachedSharedTrans;
+
+    const mainLangStored = await storage.get('ytm_main_lang');
+    if (mainLangStored) config.mainLang = mainLangStored;
+    const subLangStored = await storage.get('ytm_sub_lang');
+    if (subLangStored !== null) config.subLang = subLangStored;
     const uiLangStored = await storage.get('ytm_ui_lang');
     if (uiLangStored) config.uiLang = uiLangStored;
 
@@ -1993,7 +2729,10 @@ async function applyLyricsText(rawLyrics) {
     if (offsetStored !== null) config.syncOffset = offsetStored;
     const saveOffsetStored = await storage.get('ytm_save_sync_offset');
     if (saveOffsetStored !== null) config.saveSyncOffset = saveOffsetStored;
-    // 笘・せ繝ｩ繧､繝繝ｼ蛻晄悄蛟､蜿肴丐
+    const lrclibFallbackStored = await storage.get('ytm_lrclib_fallback');
+    if (lrclibFallbackStored !== null) config.useLrcLibFallback = lrclibFallbackStored;
+
+    // ★スライダー初期値反映
     const weightStored = await storage.get('ytm_lyric_weight');
     if (weightStored) config.lyricWeight = weightStored;
     const brightStored = await storage.get('ytm_bg_brightness');
@@ -2010,14 +2749,97 @@ async function applyLyricsText(rawLyrics) {
         if (ui.settingsBtn && ui.settingsBtn.contains(ev.target)) return;
         ui.settings.classList.remove('active');
       }, true);
+
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape' && ui.settings && ui.settings.classList.contains('active')) {
+          ui.settings.classList.remove('active');
+        }
+      });
     }
   }
 
 
+    // ===== 共有翻訳: 残り文字数表示 =====
+  const COMMUNITY_REMAINING_TTL_MS = 60 * 1000; // 60s
+  let communityRemainingCache = { ts: 0, data: null, error: null };
+  let communityRemainingTimer = null;
+
+  function ensureCommunityRemainingTimer() {
+    if (communityRemainingTimer) return;
+    communityRemainingTimer = setInterval(() => {
+      try {
+        // 設定パネルが開いているときだけ更新（無駄な通信を減らす）
+        if (ui.settings && ui.settings.classList.contains('active')) {
+          updateCommunityRemainingUI(false);
+        }
+      } catch (_) { }
+    }, 60 * 1000);
+  }
+
+  async function getCommunityRemaining(force = false) {
+    const now = Date.now();
+    if (!force && communityRemainingCache.data && (now - communityRemainingCache.ts) < COMMUNITY_REMAINING_TTL_MS) {
+      return communityRemainingCache.data;
+    }
+
+    if (!EXT || !EXT.runtime || typeof EXT.runtime.sendMessage !== 'function') {
+      throw new Error('extension runtime is not available');
+    }
+
+    const resp = await new Promise((resolve) => {
+      try {
+        EXT.runtime.sendMessage({ type: 'GET_COMMUNITY_REMAINING' }, (r) => resolve(r));
+      } catch (e) {
+        resolve(null);
+      }
+    });
+
+    if (!resp || !resp.ok) {
+      const msg = resp && resp.error ? resp.error : 'failed';
+      communityRemainingCache = { ts: now, data: null, error: msg };
+      throw new Error(msg);
+    }
+
+    const data = resp.data || resp.remaining || resp;
+    communityRemainingCache = { ts: now, data, error: null };
+    return data;
+  }
+
+  async function updateCommunityRemainingUI(force = false) {
+    const valEl = document.getElementById('community-remaining-val');
+        if (!valEl) return;
+
+    // 初回だけ「取得中…」
+    if (!valEl.textContent || valEl.textContent === '--') {
+      valEl.textContent = '取得中…';
+    }
+
+    try {
+      const data = await getCommunityRemaining(force);
+
+      const remaining =
+        (data && (data.total_remaining ?? data.totalRemaining ?? data.total_remaining_total ?? data.total ?? data.free_remaining_total)) ?? null;
+
+      if (remaining != null && !Number.isNaN(Number(remaining))) {
+        valEl.textContent = Number(remaining).toLocaleString();
+      } else {
+        valEl.textContent = '--';
+      }
+
+      // 生データは hover で見れるように
+      try {
+        valEl.title = JSON.stringify(data, null, 2);
+      } catch (_) { }
+    } catch (e) {
+      valEl.textContent = '--';
+      valEl.title = e && e.message ? e.message : String(e);
+    }
+  }
+
 function renderSettingsPanel() {
     if (!ui.settings) return;
 
-    // 迴ｾ蝨ｨ縺ｮ譖ｲID縺後≠繧九°遒ｺ隱搾ｼ医く繝｣繝・す繝･蜑企勁繝懊ち繝ｳ縺ｮ蛻ｶ蠕｡逕ｨ・・
+    // 現在の曲IDがあるか確認（キャッシュ削除ボタンの制御用）
     const hasCurrentSong = !!currentKey;
 
     // --- SVG Icons ---
@@ -2035,8 +2857,8 @@ function renderSettingsPanel() {
         <button class="settings-tab-btn active" data-tab="visuals">
           ${ICONS.visuals} Visuals
         </button>
-        <button class="settings-tab-btn" data-tab="timing">
-          ${ICONS.trans} Timing
+        <button class="settings-tab-btn" data-tab="translation">
+          ${ICONS.trans} Translation
         </button>
         <button class="settings-tab-btn" data-tab="data">
           ${ICONS.data} Data & Reset
@@ -2053,7 +2875,7 @@ function renderSettingsPanel() {
       <div class="settings-panels">
         <div class="settings-panels-header">
           <h3>${t('settings_title')}</h3>
-          <button id="ytm-settings-close-btn" title="Close">ﾃ・/button>
+          <button id="ytm-settings-close-btn" title="Close">×</button>
         </div>
         
         <div class="settings-scroll-area">
@@ -2075,8 +2897,14 @@ function renderSettingsPanel() {
               </div>
               <div class="setting-row">
                 <label class="toggle-label" style="width:100%; display:flex; justify-content:space-between; align-items:center;">
-                  <span>${t('settings_apple_bg') || 'Apple Music鬚ｨ縺ｮ蜍慕噪閭梧勹'}</span>
+                  <span>${t('settings_apple_bg') || 'Apple Music風の動的背景'}</span>
                   <input type="checkbox" id="apple-bg-toggle">
+                </label>
+              </div>
+              <div class="setting-row">
+                <label class="toggle-label" style="width:100%; display:flex; justify-content:space-between; align-items:center;">
+                  <span>LrcLibからのフォールバック取得</span>
+                  <input type="checkbox" id="lrclib-fallback-toggle">
                 </label>
               </div>
             </div>
@@ -2084,14 +2912,14 @@ function renderSettingsPanel() {
             <div class="settings-group-card">
               <div class="setting-row" style="flex-direction:column; align-items:stretch;">
                 <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:500;">
-                  <span>豁瑚ｩ槭・螟ｪ縺・(Weight)</span>
+                  <span>歌詞の太さ (Weight)</span>
                   <span id="weight-val" style="opacity:0.6;">${config.lyricWeight || 800}</span>
                 </div>
                 <input type="range" id="weight-slider" min="100" max="900" step="100" value="${config.lyricWeight || 800}">
               </div>
               <div class="setting-row" style="flex-direction:column; align-items:stretch;">
                  <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:500;">
-                  <span>閭梧勹縺ｮ譏弱ｋ縺・(Brightness)</span>
+                  <span>背景の明るさ (Brightness)</span>
                   <span id="bright-val" style="opacity:0.6;">${Math.round((config.bgBrightness || 0.35) * 100)}%</span>
                 </div>
                 <input type="range" id="bright-slider" min="0.1" max="1.0" step="0.05" value="${config.bgBrightness || 0.35}">
@@ -2099,8 +2927,54 @@ function renderSettingsPanel() {
             </div>
           </div>
 
-          <div class="settings-panel" id="panel-timing">
-            <div class="settings-section-title">Timing</div>
+          <div class="settings-panel" id="panel-translation">
+            <div class="settings-section-title">Translation & Features</div>
+            <div class="settings-group-card">
+              <div class="setting-row">
+                <label class="toggle-label" style="width:100%; display:flex; justify-content:space-between; align-items:center;">
+                  <span>${t('settings_trans')}</span>
+                  <input type="checkbox" id="trans-toggle">
+                </label>
+              </div>
+              <div class="setting-row" id="shared-trans-row" style="flex-direction:column; align-items:stretch; gap:10px;">
+                <label class="toggle-label" style="width:100%; display:flex; justify-content:space-between; align-items:center;">
+                  <span>${t('settings_shared_trans')}</span>
+                  <input type="checkbox" id="shared-trans-toggle">
+                </label>
+                <div id="shared-trans-note" style="font-size:12px; opacity:0.7; line-height:1.4; display:none; white-space:pre-line; background:rgba(0,0,0,0.2); padding:10px; border-radius:8px;"></div>
+                <div style="width:100%; display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+                  <span style="font-size:12px; opacity:0.8;">共有翻訳 残り文字数</span>
+                  <span id="community-remaining-val" style="font-size:12px; opacity:0.7; font-weight:600; font-variant-numeric: tabular-nums;">--</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-group-card">
+               <div class="setting-row" style="flex-direction:column; align-items:flex-start; gap:8px;">
+                  <div class="ytm-lang-label">${t('settings_main_lang')}</div>
+                  <div class="ytm-lang-group" id="main-lang-group">
+                    <button class="ytm-lang-pill" data-value="original">Original</button>
+                    <button class="ytm-lang-pill" data-value="ja">日本語</button>
+                    <button class="ytm-lang-pill" data-value="en">English</button>
+                    <button class="ytm-lang-pill" data-value="ko">한국어</button>
+                  </div>
+               </div>
+               <div class="setting-row" style="flex-direction:column; align-items:flex-start; gap:8px;">
+                  <div class="ytm-lang-label">${t('settings_sub_lang')}</div>
+                  <div class="ytm-lang-group" id="sub-lang-group">
+                    <button class="ytm-lang-pill" data-value="original">Original</button>
+                    <button class="ytm-lang-pill" data-value="ja">日本語</button>
+                    <button class="ytm-lang-pill" data-value="en">English</button>
+                    <button class="ytm-lang-pill" data-value="ko">한국어</button>
+                    <button class="ytm-lang-pill" data-value="zh">中文</button>
+                  </div>
+               </div>
+               <div class="setting-row" style="display:block;">
+                 <div style="font-size:12px; margin-bottom:8px; opacity:0.7; font-weight:500;">DeepL API Key (Optional)</div>
+                 <input type="password" id="deepl-key-input" class="setting-input-text" placeholder="Paste your API key here">
+               </div>
+            </div>
+            
             <div class="settings-group-card">
                <div class="setting-row" style="flex-direction:column; align-items:stretch; gap:12px;">
                   <div style="width:100%; display:flex; justify-content:space-between; align-items:center;">
@@ -2120,15 +2994,15 @@ function renderSettingsPanel() {
             <div class="settings-group-card">
               <div class="setting-row" style="display:block;">
                 <button id="delete-current-cache-btn" class="settings-action-btn btn-danger" ${hasCurrentSong ? '' : 'disabled style="opacity:0.5; cursor:not-allowed;"'} style="display:flex; align-items:center; justify-content:center; gap:8px;">
-                  ${ICONS.trash} 縺薙・譖ｲ縺ｮ豁瑚ｩ槭ョ繝ｼ繧ｿ繧貞炎髯､
+                  ${ICONS.trash} この曲の歌詞データを削除
                 </button>
                 <div style="font-size:11px; opacity:0.5; margin-top:8px; text-align:center;">
-                  迴ｾ蝨ｨ蜀咲函荳ｭ縺ｮ譖ｲ縺ｮ豁瑚ｩ槭く繝｣繝・す繝･縺ｮ縺ｿ繧貞炎髯､縺励∪縺・
+                  現在再生中の曲の歌詞キャッシュのみを削除します
                 </div>
               </div>
               <div class="setting-row" style="display:block;">
                  <button id="clear-all-btn" class="settings-action-btn" style="background:rgba(255,255,255,0.1); color:#fff;">
-                   險ｭ螳壹ｒ繝ｪ繧ｻ繝・ヨ (Reset All)
+                   設定をリセット (Reset All)
                  </button>
               </div>
             </div>
@@ -2153,15 +3027,21 @@ function renderSettingsPanel() {
     });
     
     
-        // 蛟､縺ｮ蜿肴丐
+    // 値の反映
+    document.getElementById('deepl-key-input').value = config.deepLKey || '';
+    document.getElementById('trans-toggle').checked = config.useTrans;
+    document.getElementById('shared-trans-toggle').checked = !!config.useSharedTranslateApi;
     document.getElementById('left-align-toggle').checked = !!config.leftAlignInfo;
     document.getElementById('apple-bg-toggle').checked = !!config.appleBg;
+    document.getElementById('lrclib-fallback-toggle').checked = !!config.useLrcLibFallback;
 
-    // 蜈ｱ譛臥ｿｻ險ｳ縺ｮ谿九ｊ譁・ｭ玲焚・井ｿ晏ｭ俶ｸ医∩蛟､繧定｡ｨ遉ｺ・・
+    // 共有翻訳の残り文字数（保存済み値を表示）
+    updateCommunityRemainingUI(true);
+    ensureCommunityRemainingTimer();
     document.getElementById('sync-offset-input').valueAsNumber = config.syncOffset || 0;
     document.getElementById('sync-offset-save-toggle').checked = config.saveSyncOffset;
 
-    // 繧ｹ繝ｩ繧､繝繝ｼ繧､繝吶Φ繝郁ｨｭ螳・
+    // スライダーイベント設定
     const wSlider = document.getElementById('weight-slider');
     const bSlider = document.getElementById('bright-slider');
     if (wSlider) {
@@ -2180,10 +3060,12 @@ function renderSettingsPanel() {
       });
     }
 
-    // 險隱槭ヴ繝ｫ險ｭ螳・
+    // 言語ピル設定
+    setupLangPills('main-lang-group', config.mainLang, v => { config.mainLang = v; });
+    setupLangPills('sub-lang-group', config.subLang, v => { config.subLang = v; });
     refreshUiLangGroup();
 
-    // 髢峨§繧九・繧ｿ繝ｳ
+    // 閉じるボタン
     const closeBtn = document.getElementById('ytm-settings-close-btn');
     if (closeBtn) {
       closeBtn.onclick = (ev) => {
@@ -2192,17 +3074,27 @@ function renderSettingsPanel() {
       };
     }
 
-    // 菫晏ｭ倥・繧ｿ繝ｳ縺ｮ蜃ｦ逅・
+    // 保存ボタンの処理
     document.getElementById('save-settings-btn').onclick = async () => {
+      const savedMainLang = await storage.get('ytm_main_lang');
+      const savedSubLang = await storage.get('ytm_sub_lang');
+      const savedUseTrans = await storage.get('ytm_trans_enabled');
+      const savedSharedTrans = await storage.get('ytm_shared_trans_enabled');
       const savedUiLang = await storage.get('ytm_ui_lang');
 
       const prevMainLang = savedMainLang || 'original';
       const prevSubLang = savedSubLang !== null ? savedSubLang : 'en';
+      const prevUseTrans = savedUseTrans !== null ? savedUseTrans : true;
+      const prevUseSharedTrans = savedSharedTrans !== null ? savedSharedTrans : false;
       const prevUiLang = savedUiLang || (config.uiLang || 'ja');
 
-      // 逕ｻ髱｢縺九ｉ蛟､繧貞叙蠕・
+      // 画面から値を取得
+      config.deepLKey = document.getElementById('deepl-key-input').value.trim();
+      config.useTrans = document.getElementById('trans-toggle').checked;
+      config.useSharedTranslateApi = document.getElementById('shared-trans-toggle').checked;
       config.leftAlignInfo = document.getElementById('left-align-toggle').checked;
       config.appleBg = document.getElementById('apple-bg-toggle').checked;
+      config.useLrcLibFallback = document.getElementById('lrclib-fallback-toggle').checked;
       config.lyricWeight = document.getElementById('weight-slider').value;
       config.bgBrightness = document.getElementById('bright-slider').value;
       
@@ -2210,12 +3102,18 @@ function renderSettingsPanel() {
       config.syncOffset = isNaN(offsetVal) ? 0 : offsetVal;
       config.saveSyncOffset = document.getElementById('sync-offset-save-toggle').checked;
 
-      // 繧ｹ繝医Ξ繝ｼ繧ｸ縺ｫ菫晏ｭ・
+      // ストレージに保存
+      storage.set('ytm_deepl_key', config.deepLKey);
+      storage.set('ytm_trans_enabled', config.useTrans);
+      storage.set('ytm_shared_trans_enabled', config.useSharedTranslateApi);
       storage.set('ytm_left_align', config.leftAlignInfo);
       document.body.classList.toggle('ytm-align-left', !!config.leftAlignInfo);
       
       storage.set('ytm_apple_bg', config.appleBg);
+      storage.set('ytm_lrclib_fallback', config.useLrcLibFallback);
       document.body.classList.toggle('ytm-apple-bg', !!config.appleBg);
+      storage.set('ytm_main_lang', config.mainLang);
+      storage.set('ytm_sub_lang', config.subLang);
       storage.set('ytm_ui_lang', config.uiLang);
       storage.set('ytm_lyric_weight', config.lyricWeight);
       storage.set('ytm_bg_brightness', config.bgBrightness);
@@ -2223,6 +3121,10 @@ function renderSettingsPanel() {
       storage.set('ytm_save_sync_offset', config.saveSyncOffset);
 
       const needReload = (
+        prevMainLang !== config.mainLang ||
+        prevSubLang !== config.subLang ||
+        prevUseTrans !== config.useTrans ||
+        prevUseSharedTrans !== config.useSharedTranslateApi ||
         prevUiLang !== config.uiLang
       );
 
@@ -2235,15 +3137,15 @@ function renderSettingsPanel() {
       }
     };
 
-    // 繝ｪ繧ｻ繝・ヨ繝懊ち繝ｳ
+    // リセットボタン
     document.getElementById('clear-all-btn').onclick = storage.clear;
 
-    // 繧ｭ繝｣繝・す繝･蜑企勁繝懊ち繝ｳ縺ｮ蜃ｦ逅・
+    // キャッシュ削除ボタンの処理
     const delBtn = document.getElementById('delete-current-cache-btn');
     if (delBtn) {
       delBtn.onclick = async () => {
         if (!currentKey) return;
-        if (confirm('Delete the lyric cache for the current song?')) {
+        if (confirm('現在の曲の歌詞キャッシュを削除しますか？\n（歌詞データ、同期情報などがリセットされます）')) {
           await storage.remove(currentKey);
           
           lyricsData = [];
@@ -2260,7 +3162,7 @@ function renderSettingsPanel() {
           refreshCandidateMenu();
           refreshLockMenu();
           
-          showToast('豁瑚ｩ槭く繝｣繝・す繝･繧貞炎髯､縺励∪縺励◆');
+          showToast('歌詞キャッシュを削除しました');
         }
       };
     }
@@ -2268,7 +3170,7 @@ function renderSettingsPanel() {
 
   function createReplayPanel() {
     ui.replayPanel = createEl('div', 'ytm-replay-panel', '', `
-      <button class="replay-close-btn">ﾃ・/button>
+      <button class="replay-close-btn">×</button>
       <h3>Daily Replay</h3>
       
       <div class="ytm-lang-group" style="margin-bottom: 20px;">
@@ -2310,13 +3212,15 @@ function renderSettingsPanel() {
 
   // ===================== Artist Seamless Switch =====================
   const SWITCH_NOISE_KEYWORDS = [
-    'cover', 'covered', 'karaoke',
+    '歌ってみた', '弾いてみた', '弾いてみたけど', '踊ってみた', '叩いてみた',
+    '歌われてみた', '演奏してみた', '演奏動画',
+    'cover', 'covered', 'karaoke', 'カラオケ',
     'acoustic', 'live', 'remix', 'piano',
     'arrange', 'off vocal', 'instrumental', 'full chorus', 'short ver'
   ];
 
   function _switchQueryForMeta(meta) {
-    // Search title only 窶・not title+artist, so we get all versions
+    // Search title only — not title+artist, so we get all versions
     return (meta?.title || '').trim();
   }
 
@@ -2340,7 +3244,7 @@ function renderSettingsPanel() {
   async function searchYTMAlternatives(meta) {
     const q = _switchQueryForMeta(meta);
     if (!q) return [];
-    // Use YouTube Music's InnerTube API 窶・same endpoint the web app itself uses
+    // Use YouTube Music's InnerTube API — same endpoint the web app itself uses
     try {
       const resp = await fetch('https://music.youtube.com/youtubei/v1/search?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30', {
         method: 'POST',
@@ -2400,18 +3304,18 @@ function renderSettingsPanel() {
     if (existing) { existing.remove(); return; }
 
     const meta = getMetadata();
-    if (!meta || !meta.title) { showToast('譖ｲ蜷肴ュ蝣ｱ繧貞叙蠕励〒縺阪∪縺帙ｓ縺ｧ縺励◆'); return; }
+    if (!meta || !meta.title) { showToast('曲名情報を取得できませんでした'); return; }
 
     const panel = document.createElement('div');
     panel.id = 'ytm-switch-panel';
     panel.className = 'ytm-switch-panel';
     panel.innerHTML = `
       <div class="ytm-switch-header">
-        <span>売 莉｣譖ｿ繝舌・繧ｸ繝ｧ繝ｳ繧呈､懃ｴ｢: ${escHtml(meta.title)}</span>
-        <button class="ytm-switch-close" id="ytm-switch-close">笨・/button>
+        <span>🔄 代替バージョンを検索: ${escHtml(meta.title)}</span>
+        <button class="ytm-switch-close" id="ytm-switch-close">✕</button>
       </div>
       <div class="ytm-switch-list" id="ytm-switch-list">
-        <div class="ytm-switch-loading">讀懃ｴ｢荳ｭ窶ｦ</div>
+        <div class="ytm-switch-loading">検索中…</div>
       </div>
     `;
     document.body.appendChild(panel);
@@ -2426,7 +3330,7 @@ function renderSettingsPanel() {
       panel.style.position = 'fixed';
       panel.style.left = `${left}px`;
       panel.style.bottom = isMoviemode ?  'auto' : `${(window.innerHeight - rect.top + 10)}px`;
-      panel.style.top = isMoviemode ? `${rect.top - 10 + 65}px` : 'auto';// 65px縺ｯ縺｡繧・≧縺ｩ縺・＞鬮倥＆繧ｪ繝輔そ繝・ヨ
+      panel.style.top = isMoviemode ? `${rect.top - 10 + 65}px` : 'auto';// 65pxはちょうどいい高さオフセット
       panel.style.right = 'auto';
     }
 
@@ -2449,10 +3353,10 @@ function renderSettingsPanel() {
         // Show all unfiltered results if filter removed everything
         const fallback = rawResults.slice(0, 10);
         if (!fallback.length) {
-          listEl.innerHTML = '<div class="ytm-switch-loading">蛟呵｣懊′隕九▽縺九ｊ縺ｾ縺帙ｓ縺ｧ縺励◆</div>';
+          listEl.innerHTML = '<div class="ytm-switch-loading">候補が見つかりませんでした</div>';
           return;
         }
-        listEl.innerHTML = '<div class="ytm-switch-loading" style="font-size:10px;opacity:0.6;padding:6px 10px">繝輔ぅ繝ｫ繧ｿ繝ｼ繧堤ｷｩ繧√※陦ｨ遉ｺ縺励※縺・∪縺・/div>';
+        listEl.innerHTML = '<div class="ytm-switch-loading" style="font-size:10px;opacity:0.6;padding:6px 10px">フィルターを緩めて表示しています</div>';
         renderSwitchItems(listEl, fallback, false);
         return;
       }
@@ -2496,11 +3400,17 @@ function renderSettingsPanel() {
       ui.wrapper = document.getElementById('ytm-custom-wrapper');
       ui.bg = document.getElementById('ytm-custom-bg');
       ui.lyrics = document.getElementById('my-lyrics-container');
+      ui.meaningPanel = document.getElementById('ytm-meaning-panel');
       ui.title = document.getElementById('ytm-custom-title');
       ui.artist = document.getElementById('ytm-custom-artist');
       ui.artwork = document.getElementById('ytm-artwork-container');
       ui.btnArea = document.getElementById('ytm-btn-area');
+      ui.meaningBtn = document.getElementById('ytm-meaning-btn');
+      ui.summaryBtn = document.getElementById('ytm-meaning-summary-btn');
+      ui.meaningSummaryBackdrop = document.getElementById('ytm-meaning-summary-backdrop');
+      ui.meaningSummaryDialog = document.getElementById('ytm-meaning-summary-dialog');
       setupAutoHideEvents();
+      refreshMeaningUi();
       return;
     }
     ui.bg = createEl('div', 'ytm-custom-bg');
@@ -2515,9 +3425,11 @@ function renderSettingsPanel() {
 
     const btns = [];
     const lyricsBtnConfig = { txt: 'Lyrics', cls: 'lyrics-btn', click: () => { } };
+    const meaningBtnConfig = { txt: '解説', cls: 'meaning-btn', click: () => toggleMeaningPanel() };
+    const summaryBtnConfig = { txt: '要約', cls: 'meaning-summary-btn', click: () => showMeaningSummaryPopup() };
     const shareBtnConfig = { txt: 'Share', cls: 'share-btn', click: onShareButtonClick };
 
-    //  PiP繝懊ち繝ｳ
+    //  PiPボタン
     const pipBtnConfig = {
       txt: 'PIP',
       cls: 'icon-btn',
@@ -2542,7 +3454,6 @@ function renderSettingsPanel() {
       cls: 'icon-btn',
       click: async () => {
         initSettings();
-        await loadRemoteTextsFromGithub();
         refreshUiLangGroup();
         ui.settings.classList.toggle('active');
       }
@@ -2554,8 +3465,8 @@ function renderSettingsPanel() {
       click: (ev) => setupSwitchPanel(ev.currentTarget)
     };
 
-    // 繝懊ち繝ｳ驟榊・縺ｫ霑ｽ蜉
-    btns.push(lyricsBtnConfig, shareBtnConfig, pipBtnConfig, replayBtnConfig, switchBtnConfig, settingsBtnConfig);
+    // ボタン配列に追加
+    btns.push(lyricsBtnConfig, meaningBtnConfig, summaryBtnConfig, shareBtnConfig, pipBtnConfig, replayBtnConfig, switchBtnConfig, settingsBtnConfig);
 
     btns.forEach(b => {
       const btn = createEl('button', '', `ytm-glass-btn ${b.cls || ''}`, b.txt);
@@ -2564,6 +3475,14 @@ function renderSettingsPanel() {
       if (b === lyricsBtnConfig) {
         ui.lyricsBtn = btn;
         setupUploadMenu(btn);
+      }
+      if (b === meaningBtnConfig) {
+        btn.id = 'ytm-meaning-btn';
+        ui.meaningBtn = btn;
+      }
+      if (b === summaryBtnConfig) {
+        btn.id = 'ytm-meaning-summary-btn';
+        ui.summaryBtn = btn;
       }
       if (b === shareBtnConfig) {
         ui.shareBtn = btn;
@@ -2574,7 +3493,7 @@ function renderSettingsPanel() {
         try {
           const iconUrl = chrome.runtime.getURL('src/assets/icons/ArtistChange.png');
           btn.innerHTML = `<img src="${iconUrl}" style="width:18px;height:18px;object-fit:contain;vertical-align:middle;" alt="ArtistChange">`;
-        } catch(_) { btn.textContent = '売'; }
+        } catch(_) { btn.textContent = '🔄'; }
       }
       if (b === settingsBtnConfig) ui.settingsBtn = btn;
     });
@@ -2588,21 +3507,35 @@ function renderSettingsPanel() {
     info.append(ui.title, ui.artist, ui.btnArea);
     leftCol.append(ui.artwork, info);
     ui.lyrics = createEl('div', 'my-lyrics-container');
-    ui.wrapper.append(leftCol, ui.lyrics);
+    ui.meaningPanel = createEl('aside', 'ytm-meaning-panel', 'ytm-meaning-panel');
+    ui.wrapper.append(leftCol, ui.lyrics, ui.meaningPanel);
     document.body.appendChild(ui.wrapper);
+    ensureMeaningSummaryDialog();
+    refreshMeaningUi();
     setupAutoHideEvents();
+    setupScrollResumeEvents();
     if(isYTMPremiumUser()) setupMovieMode(); //moviemode setup
   }
 
   async function loadLyrics(meta) {
+    if (!config.deepLKey) config.deepLKey = await storage.get('ytm_deepl_key');
+    const cachedTrans = await storage.get('ytm_trans_enabled');
+    if (cachedTrans !== null && cachedTrans !== undefined) config.useTrans = cachedTrans;
 
+    const cachedSharedTrans = await storage.get('ytm_shared_trans_enabled');
+    if (cachedSharedTrans !== null && cachedSharedTrans !== undefined) config.useSharedTranslateApi = cachedSharedTrans;
+    const mainLangStored = await storage.get('ytm_main_lang');
+    const subLangStored = await storage.get('ytm_sub_lang');
+    if (mainLangStored) config.mainLang = mainLangStored;
+    if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
     const uiLangStored = await storage.get('ytm_ui_lang');
     if (uiLangStored) config.uiLang = uiLangStored;
+    const lrclibFallbackStored = await storage.get('ytm_lrclib_fallback');
+    if (lrclibFallbackStored !== null) config.useLrcLibFallback = lrclibFallbackStored;
 
     const thisKey = `${meta.title}///${meta.artist}`;
     if (thisKey !== currentKey) return;
     let cached = await storage.get(thisKey);
-    isFallbackLyrics = false;
     dynamicLines = null;
     duetSubDynamicLines = null;
     _duetExcludedTimes = new Set();
@@ -2612,6 +3545,7 @@ function renderSettingsPanel() {
     lyricsRequests = null;
     lyricsConfig = null;
     lyricsLockState = null;
+    setLyricsMeaningData(null);
     let data = null;
     let noLyricsCached = false;
     if (cached !== null && cached !== undefined) {
@@ -2624,33 +3558,26 @@ function renderSettingsPanel() {
         if (Array.isArray(cached.dynamicLines)) dynamicLines = cached.dynamicLines;
         if (typeof cached.subLyrics === 'string') duetSubLyricsRaw = cached.subLyrics;
         if (cached.noLyrics) noLyricsCached = true;
-        if (cached.githubFallback) isFallbackLyrics = true;
         if (Array.isArray(cached.candidates)) lyricsCandidates = cached.candidates;
         if (Array.isArray(cached.requests)) lyricsRequests = cached.requests;
         if (cached.config) lyricsConfig = cached.config;
         if (cached.lockState && typeof cached.lockState === 'object') lyricsLockState = cached.lockState;
+        if (cached.meaningData) setLyricsMeaningData(cached.meaningData);
       }
     }
     syncLyricsLockState();
     refreshCandidateMenu();
     refreshLockMenu();
-    if (!data && noLyricsCached) {
-      if (thisKey !== currentKey) return;
-      renderLyrics([]);
-      return;
-    }
-    if (!data && !noLyricsCached) {
-      let gotLyrics = false;
-
-
-      try {
+    // Always fetch fresh data from URL as requested
+    let gotLyrics = false;
+    try {
         const track = meta.title.replace(/\s*[\(-\[].*?[\)-]].*/, '');
         const artist = meta.artist;
         const youtube_url = getCurrentVideoUrl();
         const video_id = getCurrentVideoId();
         const res = await new Promise(resolve => {
           chrome.runtime.sendMessage(
-            { type: 'GET_LYRICS', payload: { track, artist, video_id } },
+            { type: 'GET_LYRICS', payload: { track, artist, youtube_url, video_id, use_lrclib: config.useLrcLibFallback } },
             resolve
           );
         });
@@ -2661,7 +3588,7 @@ function renderSettingsPanel() {
         lyricsCandidates = Array.isArray(res?.candidates) ? res.candidates : null;
         refreshCandidateMenu();
         refreshLockMenu();
-        isFallbackLyrics = !!res?.githubFallback;
+        if (res?.meaningData) setLyricsMeaningData(res.meaningData);
         if (typeof res?.subLyrics === 'string' && res.subLyrics.trim()) duetSubLyricsRaw = res.subLyrics;
 
         if (res?.success && typeof res.lyrics === 'string' && res.lyrics.trim()) {
@@ -2673,8 +3600,8 @@ function renderSettingsPanel() {
               lyrics: data,
               dynamicLines: dynamicLines || null,
               noLyrics: false,
-              githubFallback: isFallbackLyrics,
               subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
+              meaningData: lyricsMeaning || null,
               candidates: lyricsCandidates || null,
               requests: lyricsRequests || null,
               config: lyricsConfig || null,
@@ -2691,12 +3618,12 @@ function renderSettingsPanel() {
         storage.set(thisKey, NO_LYRICS_SENTINEL);
         noLyricsCached = true;
       }
-    }
     if (thisKey !== currentKey) return;
     if (!data) {
       renderLyrics([]);
       refreshCandidateMenu();
       refreshLockMenu();
+      refreshMeaningUi();
       return;
     }
     await applyLyricsText(data);
@@ -2704,7 +3631,78 @@ function renderSettingsPanel() {
 
 const optimizeLineBreaks = (text) => {
     if (!text) return '';
-    return `<span class="lyric-phrase">${escapeHtml(text)}</span>`;
+
+    const segmenter = new Intl.Segmenter('ja', { granularity: 'word' });
+    const segments = Array.from(segmenter.segment(text));
+
+    let html = '';
+    let buffer = '';
+
+    const rules = {
+      suffixes: new Set([
+        'て', 'に', 'を', 'は', 'が', 'の', 'へ', 'と', 'も', 'で', 'や', 'し', 'から', 'より', 'だけ', 'まで', 'こそ', 'さえ', 'でも', 'など', 'なら', 'くらい', 'ぐらい', 'ばかり',
+        'ね', 'よ', 'な', 'さ', 'わ', 'ぞ', 'ぜ', 'かしら', 'かな', 'かも', 'だし', 'もん', 'もの',
+        'って', 'けど', 'けれど', 'のに', 'ので', 'から', 'ため', 'よう', 'こと', 'もの', 'わけ', 'ほう', 'ところ', 'とおり',
+        'た', 'だ', 'ない', 'たい', 'ます', 'ません', 'う', 'よう', 'れる', 'られる', 'せる', 'させる', 'ん', 'ず',
+        'てた', 'てる', 'ちゃう', 'じゃん', 'なきゃ', 'なくちゃ', 'く', 'き', 'けれ', 'れば',
+        'った', 'たら', 'たり',
+        'か', 'かい', 'だい', 'いる', 'ある', 'くる', 'いく', 'みる', 'おく', 'しまう', 'ほしい', 'あげる', 'くれる', 'もらう',
+        '、', '。', '，', '．', '…', '・', '！', '？', '!', '?', '~', '～', '“', '”', '‘', '’', ')', ']', '}', '」', '』', '】', '）'
+      ]),
+
+      isEnglish: (w) => /^[a-zA-Z0-9'\-\.,!?:;]+$/.test(w),
+      isSpace: (w) => /^\s+$/.test(w),
+      isOpenParen: (w) => /^[\(\[\{「『（【]$/.test(w),
+      hasKanji: (w) => /[\u4E00-\u9FFF]/.test(w),
+      isHiragana: (w) => /^[\u3040-\u309F\u30FC]+$/.test(w),
+      isKatakana: (w) => /^[\u30A0-\u30FF\u30FC]+$/.test(w),
+      startsWithSmallKana: (w) => /^[\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085\u3087\u308E\u3095\u3096]/.test(w)
+    };
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const word = seg.segment;
+      const next = segments[i + 1];
+
+      buffer += word;
+
+      if (!next) {
+        html += `<span class="lyric-phrase">${buffer}</span>`;
+        break;
+      }
+
+      const nextWord = next.segment;
+      let shouldMerge = false;
+
+      if (rules.startsWithSmallKana(nextWord)) {
+        shouldMerge = true;
+      }
+      else if (rules.suffixes.has(nextWord)) {
+         if (!rules.isOpenParen(nextWord)) {
+           shouldMerge = true;
+         }
+      }
+
+      else if (rules.hasKanji(word) && rules.isHiragana(nextWord)) {
+        shouldMerge = true;
+      }
+      else if (rules.isKatakana(word) && rules.isKatakana(nextWord)) {
+        shouldMerge = true;
+      }
+      else if ((rules.isEnglish(word) || rules.isSpace(word)) && 
+               (rules.isEnglish(nextWord) || rules.isSpace(nextWord))) {
+        shouldMerge = true;
+      }
+
+      if (shouldMerge) {
+        continue;
+      }
+
+      html += `<span class="lyric-phrase">${buffer}</span>`;
+      buffer = '';
+    }
+
+    return html;
   };    
   function renderLyrics(data) {
     if (!ui.lyrics) return;
@@ -2742,28 +3740,28 @@ const optimizeLineBreaks = (text) => {
       // dynamic lyrics highlighting
       let dyn = null;
       
-      // 繧ｵ繝悶・繝ｼ繧ｫ繝ｫ(right)縺ｫ縺ｯduetSubDynamicLines繧剃ｽｿ逕ｨ縲√Γ繧､繝ｳ縺ｫ縺ｯdynamicLines繧剃ｽｿ逕ｨ
+      // サブボーカル(right)にはduetSubDynamicLinesを使用、メインにはdynamicLinesを使用
       if (line && line.duetSide === 'right') {
-        // 繧ｵ繝悶・繝ｼ繧ｫ繝ｫ逕ｨ縺ｮdynamic lines・・ub.txt縺轡ynamic LRC蠖｢蠑上・蝣ｴ蜷茨ｼ・
+        // サブボーカル用のdynamic lines（sub.txtがDynamic LRC形式の場合）
         if (duetSubDynamicLines && Array.isArray(duetSubDynamicLines) && duetSubDynamicLines.length) {
           if (typeof line.time === 'number') {
              dyn = findDynamicLineForRender(line, duetSubDynamicLines, usedSubDynamicIndices);
           }
         } else if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
-          // sub.txt縺碁壼ｸｸLRC蠖｢蠑上・蝣ｴ蜷医√Γ繧､繝ｳ縺ｮDynamic LRC縺九ｉ繧ｳ繝ｳ繝・Φ繝・・繝・メ縺ｧ1譁・ｭ怜酔譛溘ョ繝ｼ繧ｿ繧貞叙蠕・
-          // 竊・繧ｵ繝悶・繝ｼ繧ｫ繝ｫ蜿ｳ蛛ｴ繧・譁・ｭ励ワ繧､繝ｩ繧､繝医↓蟇ｾ蠢懶ｼ・遘偵・險ｱ螳ｹ蟷・蜀・ｮｹ荳閾ｴ縺ｧ讀懃ｴ｢・・
+          // sub.txtが通常LRC形式の場合、メインのDynamic LRCからコンテンツマッチで1文字同期データを取得
+          // → サブボーカル右側も1文字ハイライトに対応（5秒の許容幅+内容一致で検索）
           if (typeof line.time === 'number') {
             dyn = findDynamicLineByContent(line, dynamicLines);
           }
         }
       } else {
-        // 繝｡繧､繝ｳ繝懊・繧ｫ繝ｫ逕ｨ縺ｮdynamic lines
+        // メインボーカル用のdynamic lines
         if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
           if (typeof line.time === 'number') {
-             // 譎る俣縺ｧ讀懃ｴ｢
+             // 時間で検索
              dyn = findDynamicLineForRender(line, dynamicLines, usedMainDynamicIndices);
           } else {
-             // 繝・Η繧ｨ繝・ヨ繝｢繝ｼ繝我ｻ･螟悶・縺ｿ繧､繝ｳ繝・ャ繧ｯ繧ｹ繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ繧剃ｽｿ逕ｨ
+             // デュエットモード以外のみインデックスフォールバックを使用
              const isDuetMode = document.body.classList.contains('ytm-duet-mode');
              if (!isDuetMode) {
                 dyn = dynamicLines[index];
@@ -2807,11 +3805,19 @@ const optimizeLineBreaks = (text) => {
       }
       row.appendChild(mainSpan);
       
+      if (line && line.translation) {
+        const subSpan = createEl('span', '', 'lyric-translation', line.translation);
+        row.appendChild(subSpan);
+        row.classList.add('has-translation');
+      }
 
       row.onclick = () => {
         if (shareMode) {
           handleShareLineClick(index);
           return;
+        }
+        if (meaningPanelVisible && line && typeof line.time === 'number') {
+          syncMeaningPanelToPlayback(true, line.time);
         }
         if (!hasTimestamp || !line || line.time == null) return;
         const v = document.querySelector('video');
@@ -2889,6 +3895,13 @@ const optimizeLineBreaks = (text) => {
     lyricRafId = requestAnimationFrame(loop);
   }
 
+  let lastScrolledIndex = -1;
+  let isUserScrolling = false;
+  let userScrollTimeout = null;
+  let isProgrammaticScrolling = false;
+  let programmaticScrollTimeout = null;
+  let programmaticScrollMaxTimeout = null;
+
   function updateLyricHighlight(currentTime) {
     if (!lyricsData.length) return;
     if (!hasTimestamp) return;
@@ -2896,7 +3909,12 @@ const optimizeLineBreaks = (text) => {
     const t = currentTime;
 
     let idx = -1;
-    const startSearch = Math.max(0, lastActiveIndex);
+    let startSearch = Math.max(0, lastActiveIndex);
+
+    // 再生時間が前回の位置より大幅に戻っている場合は最初から検索
+    if (startSearch >= lyricsData.length || (startSearch > 0 && lyricsData[startSearch].time > t + 0.5)) {
+      startSearch = 0;
+    }
 
     for (let i = startSearch; i < lyricsData.length; i++) {
       if (lyricsData[i].time > t) {
@@ -2938,8 +3956,8 @@ const optimizeLineBreaks = (text) => {
         ) ? (idx - 1) : -1;
 
         if (prevIdx >= 0) {
-          // 繝・Η繧ｨ繝・ヨ繝｢繝ｼ繝峨〒duetSide縺檎焚縺ｪ繧玖｡鯉ｼ医Γ繧､繝ｳ竍斐し繝厄ｼ峨・霑ｽ蜉縺励↑縺・
-          // ・・譁・ｭ苓ｿｽ霍｡繧ｿ繧､繝繧ｹ繧ｿ繝ｳ繝玲凾縺ｫ繧ｵ繝悶・繝ｼ繧ｫ繝ｫ縺後ム繝悶ｋ蜴溷屏縺ｫ縺ｪ繧九◆繧・ｼ・
+          // デュエットモードでduetSideが異なる行（メイン⇔サブ）は追加しない
+          // （1文字追跡タイムスタンプ時にサブボーカルがダブる原因になるため）
           const currentSide = lyricsData[idx]?.duetSide;
           const prevSide = lyricsData[prevIdx]?.duetSide;
           const isDifferentDuetSide = currentSide && prevSide && currentSide !== prevSide;
@@ -2971,8 +3989,8 @@ const optimizeLineBreaks = (text) => {
             if (otherIdx === activeIdx) return false;
             const otherLine = lyricsData[otherIdx];
             if (otherLine?.duetSide !== 'left') return false;
-            // Dynamic LRC・・譁・ｭ怜酔譛滂ｼ峨・蝣ｴ蜷医・陦後・髢句ｧ区凾蛻ｻ縺梧怙螟ｧ5遘偵★繧後ｋ蜿ｯ閭ｽ諤ｧ縺後≠繧九◆繧・
-            // 險ｱ螳ｹ蟷・ｒ蜍慕噪縺ｫ蛻・ｊ譖ｿ縺医ｋ・磯壼ｸｸLRC縺ｯDUET_DUPLICATE_TOLERANCE=1.0s縺ｮ縺ｾ縺ｾ・・
+            // Dynamic LRC（1文字同期）の場合は行の開始時刻が最大5秒ずれる可能性があるため
+            // 許容幅を動的に切り替える（通常LRCはDUET_DUPLICATE_TOLERANCE=1.0sのまま）
             const dedupeTol = (Array.isArray(dynamicLines) && dynamicLines.length > 0)
               ? 5.0
               : DUET_DUPLICATE_TOLERANCE;
@@ -3000,27 +4018,47 @@ const optimizeLineBreaks = (text) => {
         if (isActive) {
           if (!r.classList.contains('active')) {
             r.classList.add('active');
+          }
 
-// Only the primary line should scroll / count replay
-           // Only the primary line should scroll / count replay
-// Only the primary line should scroll / count replay
-           // Only the primary line should scroll / count replay
-            if (isPrimary) {
-              // 逕ｻ髱｢縺ｮ遞ｮ鬘橸ｼ磯壼ｸｸ逕ｻ髱｢縺輝IP縺具ｼ峨〒繧ｹ繧ｯ繝ｭ繝ｼ繝ｫ菴咲ｽｮ繧貞・縺代ｋ
-              if (container === ui.lyrics) {
-                // 縲宣壼ｸｸ蜀咲函逕ｻ髱｢縲・繝悶Λ繧ｦ繧ｶ縺ｮ讓呎ｺ匁ｩ溯・縺ｧ縲檎黄逅・噪縺ｪ荳ｭ螟ｮ縲阪↓蠑ｷ蛻ｶ驟咲ｽｮ
-                r.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                ReplayManager.incrementLyricCount();
-              } else {
-                // 縲娠IP・亥ｰ冗ｪ難ｼ峨・蠑輔″邯壹″ Apple Music鬚ｨ縺ｫ縲御ｺ瑚｡御ｸ・(35%縺ｮ菴咲ｽｮ)縲阪ｒ繧ｭ繝ｼ繝・
-                const offsetTop = r.offsetTop;
-                const containerHeight = container.clientHeight;
-                const targetScroll = offsetTop - (containerHeight * 0.35) + (r.offsetHeight / 2);
-                container.scrollTo({ top: targetScroll, behavior: 'smooth' });
-              }
-            }            
-                      }
+          if (isPrimary && !isUserScrolling && idx !== lastScrolledIndex) {
+            if (container === ui.lyrics) {
+              // 【通常再生画面】
+              // getBoundingClientRect を使って要素の絶対位置から確実なスクロール量を計算
+              const containerRect = container.getBoundingClientRect();
+              const rRect = r.getBoundingClientRect();
+              const targetScroll = container.scrollTop + rRect.top - containerRect.top - (container.clientHeight / 2) + (rRect.height / 2);
+              
+              isProgrammaticScrolling = true;
+              clearTimeout(programmaticScrollTimeout);
+              clearTimeout(programmaticScrollMaxTimeout);
+              programmaticScrollTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 150);
+              programmaticScrollMaxTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 1200);
 
+              container.scrollTo({ top: targetScroll, behavior: 'smooth' });
+              
+              lastScrolledIndex = idx;
+              ReplayManager.incrementLyricCount();
+            } else {
+              // 【PIP（小窓）】
+              const containerRect = container.getBoundingClientRect();
+              const rRect = r.getBoundingClientRect();
+              const targetScroll = container.scrollTop + rRect.top - containerRect.top - (container.clientHeight * 0.35) + (rRect.height / 2);
+              
+              isProgrammaticScrolling = true;
+              clearTimeout(programmaticScrollTimeout);
+              clearTimeout(programmaticScrollMaxTimeout);
+              programmaticScrollTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 150);
+              programmaticScrollMaxTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 1200);
+
+              container.scrollTo({ top: targetScroll, behavior: 'smooth' });
+              
+              lastScrolledIndex = idx;
+            }
+          }
+
+          if (r.classList.contains('has-translation')) {
+            r.classList.add('show-translation');
+          }
 
           const charSpans = r.querySelectorAll('.lyric-char');
           if (charSpans.length > 0) {
@@ -3037,6 +4075,7 @@ const optimizeLineBreaks = (text) => {
           }
         } else {
           r.classList.remove('active');
+          r.classList.remove('show-translation');
 
           const charSpans = r.querySelectorAll('.lyric-char');
           if (charSpans.length > 0) {
@@ -3050,13 +4089,16 @@ const optimizeLineBreaks = (text) => {
     });
 
     lastActiveIndex = idx;
+    if (meaningPanelVisible) {
+      syncMeaningPanelToPlayback(false, t);
+    }
   }
 
-  // ===================== Share 讖溯・ =====================
+  // ===================== Share 機能 =====================
 
   function onShareButtonClick() {
     if (!lyricsData.length) {
-      showToast('蜈ｱ譛峨〒縺阪ｋ豁瑚ｩ槭′縺ゅｊ縺ｾ縺帙ｓ');
+      showToast('共有できる歌詞がありません');
       return;
     }
     shareMode = !shareMode;
@@ -3065,7 +4107,7 @@ const optimizeLineBreaks = (text) => {
     if (shareMode) {
       document.body.classList.add('ytm-share-select-mode');
       if (ui.shareBtn) ui.shareBtn.classList.add('share-active');
-      showToast('蜈ｱ譛峨＠縺溘＞豁瑚ｩ槭・髢句ｧ玖｡後→邨ゆｺ・｡後ｒ繧ｯ繝ｪ繝・け縺励※縺上□縺輔＞');
+      showToast('共有したい歌詞の開始行と終了行をクリックしてください');
     } else {
       document.body.classList.remove('ytm-share-select-mode');
       if (ui.shareBtn) ui.shareBtn.classList.remove('share-active');
@@ -3142,6 +4184,9 @@ const optimizeLineBreaks = (text) => {
     for (let i = s; i <= e; i++) {
       if (!lyricsData[i]) continue;
       let t = (lyricsData[i].text || '').trim();
+      if (!t && lyricsData[i].translation) {
+        t = String(lyricsData[i].translation).trim();
+      }
       if (t) parts.push(t);
     }
     const phrase = parts.join('\n');
@@ -3199,11 +4244,12 @@ const optimizeLineBreaks = (text) => {
   async function finalizeShareSelection() {
     const info = getShareSelectionInfo();
     if (!info || !info.phrase) {
-      showToast('Selected lyrics are empty');
+      showToast('選択された歌詞が空です');
       return;
     }
     const youtube_url = getCurrentVideoUrl();
     const video_id = getCurrentVideoId();
+    const lang = (config.mainLang && config.mainLang !== 'original') ? config.mainLang : 'ja';
     try {
       const res = await new Promise(resolve => {
         chrome.runtime.sendMessage(
@@ -3213,7 +4259,7 @@ const optimizeLineBreaks = (text) => {
       });
       if (!res || !res.success) {
         console.error('Share register failed:', res && res.error);
-        showToast('蜈ｱ譛峨↓螟ｱ謨励＠縺ｾ縺励◆');
+        showToast('共有に失敗しました');
         return;
       }
       let shareUrl = (res.data && res.data.share_url) || '';
@@ -3224,13 +4270,13 @@ const optimizeLineBreaks = (text) => {
       }
       if (shareUrl) {
         await copyToClipboard(shareUrl);
-        showToast('蜈ｱ譛峨Μ繝ｳ繧ｯ繧偵さ繝斐・縺励∪縺励◆');
+        showToast('共有リンクをコピーしました');
       } else {
-        showToast('蜈ｱ譛峨Μ繝ｳ繧ｯ縺ｮ蜿門ｾ励↓螟ｱ謨励＠縺ｾ縺励◆');
+        showToast('共有リンクの取得に失敗しました');
       }
     } catch (e) {
       console.error('Share register error', e);
-      showToast('蜈ｱ譛峨↓螟ｱ謨励＠縺ｾ縺励◆');
+      showToast('共有に失敗しました');
     } finally {
       shareMode = false;
       shareStartIndex = null;
@@ -3256,7 +4302,7 @@ const optimizeLineBreaks = (text) => {
         );
       });
       if (res?.success) {
-        showToast('豁瑚ｩ槭ｒ遒ｺ螳壹＠縺ｾ縺励◆');
+        showToast('歌詞を確定しました');
         if (reqInfo) {
           reqInfo.locked = true;
           reqInfo.available = false;
@@ -3272,12 +4318,12 @@ const optimizeLineBreaks = (text) => {
         lyricsLockState = nextState;
         refreshLockMenu();
       } else {
-        const msg = res?.error || (res?.raw && (res.raw.message || res.raw.code)) || '豁瑚ｩ槭・遒ｺ螳壹↓螟ｱ謨励＠縺ｾ縺励◆';
+        const msg = res?.error || (res?.raw && (res.raw.message || res.raw.code)) || '歌詞の確定に失敗しました';
         showToast(msg);
       }
     } catch (e) {
       console.error('lock request error', e);
-      showToast('豁瑚ｩ槭・遒ｺ螳壹↓螟ｱ謨励＠縺ｾ縺励◆');
+      showToast('歌詞の確定に失敗しました');
     }
   }
 
@@ -3288,12 +4334,12 @@ const optimizeLineBreaks = (text) => {
     if (!bar || bar.dataset.ytmBlankClickGuard === '1') return;
     bar.dataset.ytmBlankClickGuard = '1';
 
-    // 菴咏區繧ｯ繝ｪ繝・け縺後・繝ｬ繧､繝､繝ｼ縺ｮ髢矩哩縺ｫ郢九′繧九・繧帝亟縺撰ｼ医・繧ｿ繝ｳ/繧ｹ繝ｩ繧､繝繝ｼ遲峨・騾壼ｸｸ騾壹ｊ蜍輔°縺呻ｼ・
+    // 余白クリックがプレイヤーの開閉に繋がるのを防ぐ（ボタン/スライダー等は通常通り動かす）
     bar.addEventListener('click', (e) => {
       const t = e.target;
       if (!t || typeof t.closest !== 'function') return;
 
-      // 繧､繝ｳ繧ｿ繝ｩ繧ｯ繝・ぅ繝冶ｦ∫ｴ縺ｯ騾壹☆・磯哩縺倥ｋ繝懊ち繝ｳ縺ｮ騾・ｸ芽ｧ偵ｂ縺薙％縺ｫ蜷ｫ縺ｾ繧後ｋ諠ｳ螳夲ｼ・
+      // インタラクティブ要素は通す（閉じるボタンの逆三角もここに含まれる想定）
       if (
         t.closest('button, a, input, textarea, select, tp-yt-paper-icon-button, tp-yt-paper-button, tp-yt-paper-slider, ytmusic-like-button-renderer, ytmusic-toggle-button-renderer')
       ) {
@@ -3365,7 +4411,7 @@ const optimizeLineBreaks = (text) => {
     const key = `${meta.title}///${meta.artist}`;
 
     if (currentKey !== key) {
-      // 繧ｯ繝ｩ繧ｦ繝牙酔譛・
+      // クラウド同期
       if (currentKey !== null && CloudSync && typeof CloudSync.syncNow === 'function') {
         CloudSync.syncNow();
       }
@@ -3407,12 +4453,20 @@ const optimizeLineBreaks = (text) => {
       lyricsRequests = null;
       lyricsConfig = null;
       lyricsLockState = null;
+      setLyricsMeaningData(null);
+      hideMeaningSummaryPopup();
       shareMode = false;
       shareStartIndex = null;
       shareEndIndex = null;
       document.body.classList.remove('ytm-share-select-mode');
       if (ui.shareBtn) ui.shareBtn.classList.remove('share-active');
       lastActiveIndex = -1;
+      lastScrolledIndex = -1;
+      isUserScrolling = false;
+      if (userScrollTimeout) clearTimeout(userScrollTimeout);
+      isProgrammaticScrolling = false;
+      if (programmaticScrollTimeout) clearTimeout(programmaticScrollTimeout);
+      if (programmaticScrollMaxTimeout) clearTimeout(programmaticScrollMaxTimeout);
       lastTimeForChars = -1;
 
       if (ui.queuePanel && ui.queuePanel.classList.contains('visible')) {
@@ -3422,10 +4476,10 @@ const optimizeLineBreaks = (text) => {
       updateMetaUI(meta);
       preferLyricsDefault(key);
 
-      // PIP繧ｦ繧｣繝ｳ繝峨え縺ｮ繝｡繧ｿ繝・・繧ｿ縺ｨ豁瑚ｩ櫁｡ｨ遉ｺ繧偵Μ繧ｻ繝・ヨ
+      // PIPウィンドウのメタデータと歌詞表示をリセット
       if (PipManager) {
         PipManager.updateMeta(meta.title, meta.artist);
-        PipManager.resetLyrics(); // 縺薙％縺ｧ豁瑚ｩ槭ｒ荳譌ｦ豸医☆
+        PipManager.resetLyrics(); // ここで歌詞を一旦消す
       }
 
       refreshCandidateMenu();
@@ -3445,7 +4499,7 @@ function updateMetaUI(meta) {
   }
   ui.lyrics.innerHTML = '<div class="lyric-loading" style="opacity:0.5; padding:20px;">Loading...</div>';
 
-  // 繧｢繝ｼ繝・ぅ繧ｹ繝医・繝ｼ繧ｸ縺ｮURL繧貞叙蠕・
+  // アーティストページのURLを取得
   let retryCount = 0;
   const maxRetries = 5;
   const trySetArtistLink = () => {
@@ -3455,7 +4509,7 @@ function updateMetaUI(meta) {
       if (retryCount < maxRetries) {
         setTimeout(trySetArtistLink, 300);
       } else {
-        ui.artist.innerText = meta.artist; // 繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ
+        ui.artist.innerText = meta.artist; // フォールバック
       }
       return;
     }
@@ -3480,7 +4534,7 @@ function updateMetaUI(meta) {
           ${name}
         </a>`;
         if (index < artistLinks.length - 1) {
-          artistHTML += ' 窶｢ ';
+          artistHTML += ' • ';
         }
       });
       ui.artist.innerHTML = artistHTML;
@@ -3499,39 +4553,37 @@ trySetArtistLink();
 }
 
   (async function applySavedVisualSettings() {
-    // 1. 豁瑚ｩ槭・螟ｪ縺・
+    // 1. 歌詞の太さ
     const savedWeight = await storage.get('ytm_lyric_weight');
     if (savedWeight) {
       config.lyricWeight = savedWeight;
       document.documentElement.style.setProperty('--ytm-lyric-weight', savedWeight);
     }
 
-    // 2. 閭梧勹縺ｮ譏弱ｋ縺・
+    // 2. 背景の明るさ
     const savedBright = await storage.get('ytm_bg_brightness');
     if (savedBright) {
       config.bgBrightness = savedBright;
       document.documentElement.style.setProperty('--ytm-bg-brightness', savedBright);
     }
 
-    // 3. 蟾ｦ謠・∴繧ｪ繝励す繝ｧ繝ｳ
+    // 3. 左揃えオプション
     const leftAlignStored = await storage.get('ytm_left_align');
     if (leftAlignStored !== null) config.leftAlignInfo = leftAlignStored;
     document.body.classList.toggle('ytm-align-left', !!config.leftAlignInfo);
 
-    // 4. Apple Music鬚ｨ閭梧勹繧ｪ繝励す繝ｧ繝ｳ
+    // 4. Apple Music風背景オプション
     const appleBgStored = await storage.get('ytm_apple_bg');
     if (appleBgStored !== null) config.appleBg = appleBgStored;
     document.body.classList.toggle('ytm-apple-bg', !!config.appleBg);
   })();
   
   
-  // ===================== 蛻晄悄蛹・=====================
+  // ===================== 初期化 =====================
 
   ReplayManager.init();
   QueueManager.init();
   CloudSync.init();
-
-  loadRemoteTextsFromGithub();
 
   console.log('YTM Immersion loaded.');
 

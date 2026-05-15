@@ -1,7 +1,7 @@
 export const CLOUD_STORAGE_KEY = 'dailyReplayCloudState';
 
 export const DEFAULT_CLOUD_STATE = {
-  serverBaseUrl: 'https://immersionproject.coreone.work',
+  serverBaseUrl: 'https://lrchub.coreone.work',
   loginPath: '/auth/discord',
   recoveryToken: null,
   lastSyncAt: null,
