@@ -1,0 +1,6 @@
+  setupObserver();
+
+
+
+  startLyricRafLoop();
+  hoverTimeInfoSetup();

@@ -1,0 +1,359 @@
+export const SHARED_TRANSLATE_ENDPOINTS = [
+  'https://immersionproject.coreone.work/api/translate',
+  'https://immersionproject.coreone.work/api/translate/'
+];
+
+export const COMMUNITY_REMAINING_ENDPOINTS = [
+  'https://immersionproject.coreone.work/api/community/remaining',
+  'https://immersionproject.coreone.work/api/community/remaining/',
+  'https://immersionproject.coreone.work/api/community/remaining',
+  'https://immersionproject.coreone.work/api/community/remaining/',
+];
+
+export const normalizeArtist = (s) =>
+  (s || '').toLowerCase().replace(/\s+/g, '').trim();
+
+export const pickBestLrcLibHit = (items, artist) => {
+  if (!Array.isArray(items) || !items.length) return null;
+  const target = normalizeArtist(artist);
+  const getArtistName = (it) =>
+    it.artistName || it.artist || it.artist_name || '';
+
+  let hit = null;
+
+  if (target) {
+    hit = items.find(it => {
+      const a = normalizeArtist(getArtistName(it));
+      return a && a === target && (it.syncedLyrics || it.synced_lyrics);
+    });
+    if (hit) return hit;
+
+    hit = items.find(it => {
+      const a = normalizeArtist(getArtistName(it));
+      return a && a === target && (it.plainLyrics || it.plain_lyrics);
+    });
+    if (hit) return hit;
+
+    hit = items.find(it => {
+      const a = normalizeArtist(getArtistName(it));
+      return a && (a.includes(target) || target.includes(a)) && (it.syncedLyrics || it.synced_lyrics);
+    });
+    if (hit) return hit;
+
+    hit = items.find(it => {
+      const a = normalizeArtist(getArtistName(it));
+      return a && (a.includes(target) || target.includes(a)) && (it.plainLyrics || it.plain_lyrics);
+    });
+    if (hit) return hit;
+  }
+
+  return null;
+};
+
+export const fetchFromLrcLib = (track, artist) => {
+  if (!track) return Promise.resolve({ lyrics: '', candidates: [] });
+  const url = `https://lrclib.net/api/search?track_name=${encodeURIComponent(track)}`;
+  console.log('[BG] LrcLib search URL:', url);
+
+  return fetch(url)
+    .then(r => (r.ok ? r.json() : Promise.reject(r.statusText)))
+    .then(list => {
+      console.log('[BG] LrcLib search result count:', Array.isArray(list) ? list.length : 'N/A');
+      const items = Array.isArray(list) ? list : [];
+      
+      const hit = pickBestLrcLibHit(items, artist);
+      
+      let bestLyrics = '';
+      if (hit) {
+        const synced = hit.syncedLyrics || hit.synced_lyrics || '';
+        const plain = hit.plainLyrics || hit.plain_lyrics || hit.plain_lyrics_text || '';
+        bestLyrics = (synced || plain || '').trim();
+      }
+
+      const candidates = items.map(item => {
+        const synced = item.syncedLyrics || item.synced_lyrics || '';
+        const plain = item.plainLyrics || item.plain_lyrics || item.plain_lyrics_text || '';
+        const txt = (synced || plain || '').trim();
+        if (!txt) return null;
+
+        return {
+          id: `lrclib_${item.id}`,
+          artist: item.artistName || item.artist,
+          title: item.trackName || item.trackName,
+          source: 'LrcLib',
+          has_synced: !!synced,
+          lyrics: txt
+        };
+      }).filter(Boolean);
+
+      return { lyrics: bestLyrics, candidates: candidates };
+    })
+    .catch(err => {
+      console.error('[BG] LrcLib error:', err);
+      return { lyrics: '', candidates: [] };
+    });
+};
+
+export const formatLrcTime = (seconds) => {
+  const total = Math.max(0, seconds);
+  const min = Math.floor(total / 60);
+  const sec = Math.floor(total - min * 60);
+  const cs = Math.floor((total - min * 60 - sec) * 100);
+  const mm = String(min).padStart(2, '0');
+  const ss = String(sec).padStart(2, '0');
+  const cc = String(cs).padStart(2, '0');
+  return `${mm}:${ss}.${cc}`;
+};
+
+export const getCacheBuster = () => {
+  return Math.floor(1000 + Math.random() * 9000).toString();
+};
+
+export const fetchFromLrchub = (params) => {
+  const { track, artist, youtube_url, video_id, offset_ms, translate_to, translation_source } = params;
+  return fetch(`https://lrchub.coreone.work/api/lyrics?_=${getCacheBuster()}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      track, 
+      artist, 
+      youtube_url, 
+      video_id, 
+      offset_ms, 
+      translate_to, 
+      translation_source 
+    }),
+  })
+    .then(r => r.json())
+    .then(res => {
+      let lyrics = '';
+      let dynamicLines = null;
+
+      if (res.dynamic_lrc || res.dynamic_lyrics) {
+        // dynamic_lyrics might be a string (LRC) or an object (structured)
+        // Based on the spec, it looks like a string in the example
+        const dynText = res.dynamic_lrc || res.dynamic_lyrics;
+        if (typeof dynText === 'string') {
+          dynamicLines = parseDynamicLrc(dynText);
+          lyrics = buildLrcFromDynamic(dynamicLines);
+        } else if (typeof dynText === 'object' && Array.isArray(dynText.lines)) {
+          dynamicLines = dynText.lines;
+          lyrics = buildLrcFromDynamic(dynamicLines);
+        }
+      }
+
+      if (!lyrics) {
+        lyrics = res.synced_lyrics || res.lyrics || '';
+      }
+
+      return {
+        ...res,
+        lyrics: lyrics.trim(),
+        dynamicLines
+      };
+    })
+    .catch(err => {
+      console.error('[BG] LRCHub error:', err);
+      return null;
+    });
+};
+
+export const searchLrchub = (track, artist, limit = 30) => {
+  const url = new URL(`https://lrchub.coreone.work/api/search?_=${getCacheBuster()}`);
+  url.searchParams.set('track', track);
+  if (artist) url.searchParams.set('artist', artist);
+  if (limit) url.searchParams.set('limit', limit);
+
+  return fetch(url.toString())
+    .then(r => r.json())
+    .catch(err => {
+      console.error('[BG] LRCHub search error:', err);
+      return [];
+    });
+};
+
+export const fetchLrchubRecord = (record_id, translate_to) => {
+  const url = new URL(`https://lrchub.coreone.work/api/record?_=${getCacheBuster()}`);
+  url.searchParams.set('record_id', record_id);
+  if (translate_to) {
+    if (Array.isArray(translate_to)) {
+      translate_to.forEach(lang => url.searchParams.append('translate_to', lang));
+    } else {
+      url.searchParams.set('translate_to', translate_to);
+    }
+  }
+
+  return fetch(url.toString())
+    .then(r => r.json())
+    .catch(err => {
+      console.error('[BG] LRCHub record error:', err);
+      return null;
+    });
+};
+
+export const saveLrchubExplanations = (record_id, explanations, song_summary) => {
+  return fetch('https://lrchub.coreone.work/api/record/explanations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ record_id, explanations, song_summary }),
+  })
+    .then(r => r.json())
+    .catch(err => {
+      console.error('[BG] LRCHub explanations error:', err);
+      return { ok: false, error: String(err) };
+    });
+};
+
+export const parseLrcTimeToMs = (ts) => {
+  const s = String(ts || '').trim();
+  const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
+  if (!m) return null;
+  const mm = parseInt(m[1], 10);
+  const ss = parseInt(m[2], 10);
+  let frac = m[3] || '0';
+  if (frac.length === 1) frac = frac + '00';
+  else if (frac.length === 2) frac = frac + '0';
+  const ms = parseInt(frac.slice(0, 3), 10);
+  if (!Number.isFinite(mm) || !Number.isFinite(ss) || !Number.isFinite(ms)) return null;
+  return (mm * 60 + ss) * 1000 + ms;
+};
+
+export const parseDynamicLrc = (text) => {
+  const out = [];
+  if (!text) return out;
+  const rows = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const parsed = [];
+  for (const raw of rows) {
+    const line = raw.trimEnd();
+    if (!line) continue;
+    const m = line.match(/^\[(\d+:\d{2}(?:\.\d{1,3})?)\]\s*(.*)$/);
+    if (!m) continue;
+    parsed.push({ lineMs: parseLrcTimeToMs(m[1]), rest: m[2] || '' });
+  }
+
+  const pushDistributed = (chars, chunk, startMs, endMs) => {
+    if (!chunk) return;
+    const arr = Array.from(chunk);
+    const n = arr.length;
+    if (!n) return;
+    const s = (typeof startMs === 'number') ? startMs : null;
+    const e = (typeof endMs === 'number') ? endMs : null;
+    if (s == null) {
+      for (const ch of arr) chars.push({ t: 0, c: ch });
+      return;
+    }
+    if (e == null || e <= s) {
+      for (const ch of arr) chars.push({ t: s, c: ch });
+      return;
+    }
+    const dur = Math.max(1, e - s);
+    const step = dur / n;
+    for (let i = 0; i < n; i++) chars.push({ t: s + Math.floor(step * i), c: arr[i] });
+  };
+
+  for (let li = 0; li < parsed.length; li++) {
+    const { lineMs, rest } = parsed[li];
+    const nextLineMs = (li + 1 < parsed.length && typeof parsed[li + 1].lineMs === 'number') ? parsed[li + 1].lineMs : null;
+    const tagRe = /<(\d+:\d{2}(?:\.\d{1,3})?)>/g;
+    const chars = [];
+    let prevMs = null;
+    let prevEnd = 0;
+
+    while (true) {
+      const mm = tagRe.exec(rest);
+      if (!mm) break;
+      const tagMs = parseLrcTimeToMs(mm[1]);
+      if (prevMs == null && tagMs != null && mm.index > prevEnd) {
+        pushDistributed(chars, rest.slice(prevEnd, mm.index), tagMs, tagMs);
+      }
+      if (prevMs != null) {
+        pushDistributed(chars, rest.slice(prevEnd, mm.index), prevMs, tagMs);
+      }
+      prevMs = tagMs;
+      prevEnd = mm.index + mm[0].length;
+    }
+
+    if (prevMs != null) {
+      let endMs = nextLineMs;
+      if (typeof endMs !== 'number') endMs = prevMs + 1500;
+      if (endMs <= prevMs) endMs = prevMs + 200;
+      pushDistributed(chars, rest.slice(prevEnd), prevMs, endMs);
+    }
+
+    out.push({
+      startTimeMs: (typeof lineMs === 'number' ? lineMs : (chars.length ? chars[0].t : 0)),
+      text: chars.map(c => c.c).join(''),
+      chars,
+    });
+  }
+
+  return out;
+};
+
+export const buildLrcFromDynamic = (lines) => {
+  if (!Array.isArray(lines) || !lines.length) return '';
+  return lines.map((line) => {
+    let ms = null;
+    if (typeof line.startTimeMs === 'number') ms = line.startTimeMs;
+    else if (typeof line.startTimeMs === 'string') {
+      const n = Number(line.startTimeMs);
+      if (!Number.isNaN(n)) ms = n;
+    } else if (Array.isArray(line.chars) && line.chars.length) {
+      const ts = line.chars.map(c => (typeof c.t === 'number' ? c.t : null)).filter(v => v != null);
+      if (ts.length) ms = Math.min(...ts);
+    }
+    if (ms == null) return null;
+
+    let textLine = '';
+    if (typeof line.text === 'string' && line.text.length) textLine = line.text;
+    else if (Array.isArray(line.chars)) textLine = line.chars.map(c => c.c || c.text || c.caption || '').join('');
+    textLine = String(textLine ?? '');
+    const timeTag = `[${formatLrcTime(ms / 1000)}]`;
+    return textLine ? `${timeTag} ${textLine}` : timeTag;
+  }).filter(Boolean).join('\n').trimEnd();
+};
+;
+
+export const extractVideoIdFromUrl = (youtube_url) => {
+  if (!youtube_url) return null;
+  try {
+    const u = new URL(youtube_url);
+    if (u.hostname === 'youtu.be') {
+      const id = u.pathname.replace('/', '');
+      return id || null;
+    }
+    const v = u.searchParams.get('v');
+    return v || null;
+  } catch (e) {
+    return null;
+  }
+};
+
+export const withTimeout = (promise, ms, label) => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(label || 'timeout')), ms);
+    }),
+  ]);
+};
+export async function fetchCommunityRemaining() {
+  let lastErr = null;
+  for (const url of COMMUNITY_REMAINING_ENDPOINTS) {
+    try {
+      const cbUrl = new URL(url);
+      cbUrl.searchParams.set('_', getCacheBuster());
+      const res = await withTimeout(fetch(cbUrl.toString(), { method: 'GET', cache: 'no-store' }), 20000, 'community remaining timeout');
+      if (!res.ok) {
+        const msg = await res.text().catch(() => res.statusText);
+        throw new Error(`community remaining failed: ${res.status} ${msg}`);
+      }
+      const data = await res.json().catch(() => null);
+      if (!data || typeof data !== 'object') throw new Error('community remaining: invalid json');
+      return data;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('community remaining failed');
+}
