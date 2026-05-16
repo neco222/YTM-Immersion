@@ -1195,8 +1195,38 @@
   };
 
 
+  const extractVideoIdFromHref = (href) => {
+    if (!href) return null;
+    try {
+      const url = new URL(href, location.origin);
+      const vid = url.searchParams.get('v');
+      if (vid) return vid;
+      if (url.hostname.includes('youtu.be')) {
+        return (url.pathname || '').split('/').filter(Boolean)[0] || null;
+      }
+    } catch (e) { }
+    return null;
+  };
+
+  const getCurrentVideoIdFromDom = () => {
+    const selectors = [
+      'ytmusic-player-bar yt-formatted-string.title a[href*="watch"]',
+      'ytmusic-player-bar a[href*="watch?v="]'
+    ];
+
+    for (const selector of selectors) {
+      const link = document.querySelector(selector);
+      const vid = extractVideoIdFromHref(link && (link.href || link.getAttribute('href')));
+      if (vid) return vid;
+    }
+    return null;
+  };
+
   const getCurrentVideoUrl = () => {
     try {
+      const domVid = getCurrentVideoIdFromDom();
+      if (domVid) return `https://youtu.be/${domVid}`;
+
       const url = new URL(location.href);
       const vid = url.searchParams.get('v');
       return vid ? `https://youtu.be/${vid}` : location.href;
@@ -1208,6 +1238,9 @@
 
   const getCurrentVideoId = () => {
     try {
+      const domVid = getCurrentVideoIdFromDom();
+      if (domVid) return domVid;
+
       const url = new URL(location.href);
       return url.searchParams.get('v');
     } catch (e) {
@@ -1670,28 +1703,133 @@
 
   // ===================== 歌詞＋翻訳適用 =====================
 
+  let lyricsTranslationMap = {};
+
+  const normalizeTranslationLangKey = (lang) => {
+    const key = String(lang || '').trim().toLowerCase();
+    if (key === 'jp') return 'ja';
+    if (key === 'kr') return 'ko';
+    if (key === 'cn' || key === 'zh-cn' || key === 'zh-tw') return 'zh';
+    return key;
+  };
+
+  const toLrchubTranslateLang = (lang) => {
+    const key = normalizeTranslationLangKey(lang);
+    if (!key || key === 'original') return '';
+    if (key === 'ja') return 'JA';
+    if (key === 'en') return 'EN';
+    if (key === 'ko') return 'KO';
+    if (key === 'zh') return 'CN';
+    return key.toUpperCase();
+  };
+
+  const extractTranslationLyricsLocal = (value) => {
+    if (typeof value === 'string') return value.trim();
+    if (!value || typeof value !== 'object') return '';
+
+    const fields = [
+      value.lyrics,
+      value.synced_lyrics,
+      value.syncedLyrics,
+      value.lrc,
+      value.plain_lyrics,
+      value.plainLyrics,
+      value.text
+    ];
+
+    for (const field of fields) {
+      if (typeof field === 'string' && field.trim()) return field.trim();
+    }
+    return '';
+  };
+
+  const normalizeTranslationsToLrcMapLocal = (input) => {
+    const out = {};
+    if (!input) return out;
+
+    if (input.lrc_map && typeof input.lrc_map === 'object') {
+      Object.entries(input.lrc_map).forEach(([lang, value]) => {
+        const key = normalizeTranslationLangKey(lang);
+        const lyrics = extractTranslationLyricsLocal(value);
+        if (key && lyrics) out[key] = lyrics;
+      });
+    }
+
+    if (Array.isArray(input)) {
+      input.forEach(item => {
+        if (!item) return;
+        const key = normalizeTranslationLangKey(item.language || item.lang || item.target_lang || item.targetLang);
+        const lyrics = extractTranslationLyricsLocal(item);
+        if (key && lyrics) out[key] = lyrics;
+      });
+      return out;
+    }
+
+    if (typeof input === 'object') {
+      Object.entries(input).forEach(([lang, value]) => {
+        if (lang === 'lrc_map') return;
+        const key = normalizeTranslationLangKey(value?.language || value?.lang || lang);
+        const lyrics = extractTranslationLyricsLocal(value);
+        if (key && lyrics) out[key] = lyrics;
+      });
+    }
+
+    return out;
+  };
+
+  const getRequestedTranslationLangs = () => {
+    if (!config.useTrans) return [];
+    const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
+    const subLang = normalizeTranslationLangKey(config.subLang || '');
+    const langs = [];
+    if (mainLang && mainLang !== 'original') langs.push(mainLang);
+    if (subLang && subLang !== 'original' && subLang !== mainLang) langs.push(subLang);
+    return [...new Set(langs.filter(Boolean))];
+  };
+
+  const getRequestedLrchubTranslateLangs = () => (
+    getRequestedTranslationLangs().map(toLrchubTranslateLang).filter(Boolean)
+  );
+
   async function applyTranslations(baseLines, youtubeUrl) {
     if (!config.useTrans || !Array.isArray(baseLines) || !baseLines.length) return baseLines;
     const mainLangStored = await storage.get('ytm_main_lang');
     const subLangStored = await storage.get('ytm_sub_lang');
     if (mainLangStored) config.mainLang = mainLangStored;
     if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
-    const mainLang = config.mainLang || 'original';
-    const subLang = config.subLang || '';
-    const langsToFetch = [];
-    if (mainLang && mainLang !== 'original') langsToFetch.push(mainLang);
-    if (subLang && subLang !== 'original' && subLang !== mainLang && subLang) langsToFetch.push(subLang);
+    const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
+    const subLang = normalizeTranslationLangKey(config.subLang || '');
+    const langsToFetch = getRequestedTranslationLangs();
     if (!langsToFetch.length) return baseLines;
 
-    let lrcMap = {};
+    let lrcMap = { ...(lyricsTranslationMap || {}) };
     try {
-      const res = await new Promise(resolve => {
-        chrome.runtime.sendMessage({
-          type: 'GET_TRANSLATION',
-          payload: { youtube_url: youtubeUrl, langs: langsToFetch }
-        }, resolve);
-      });
-      if (res?.success && res.lrcMap) lrcMap = res.lrcMap;
+      const missingLangs = langsToFetch.filter(lang => !lrcMap[normalizeTranslationLangKey(lang)]);
+      if (missingLangs.length) {
+        const metaNow = getMetadata();
+        const track = metaNow?.title ? metaNow.title.replace(/\s*[\(-\[].*?[\)-]].*/, '') : '';
+        const artist = metaNow?.artist || '';
+        const res = await new Promise(resolve => {
+          chrome.runtime.sendMessage({
+            type: 'GET_TRANSLATION',
+            payload: {
+              track,
+              artist,
+              youtube_url: youtubeUrl,
+              video_id: getCurrentVideoId(),
+              langs: missingLangs
+            }
+          }, resolve);
+        });
+        if (res?.success) {
+          lrcMap = {
+            ...lrcMap,
+            ...normalizeTranslationsToLrcMapLocal(res.lrcMap),
+            ...normalizeTranslationsToLrcMapLocal(res.translations)
+          };
+        }
+      }
+      lyricsTranslationMap = { ...(lyricsTranslationMap || {}), ...lrcMap };
     } catch (e) {
       console.warn('GET_TRANSLATION failed', e);
     }
@@ -1700,12 +1838,13 @@
     const needDeepL = [];
 
     langsToFetch.forEach(lang => {
-      const lrc = (lrcMap && lrcMap[lang]) || '';
+      const langKey = normalizeTranslationLangKey(lang);
+      const lrc = (lrcMap && lrcMap[langKey]) || '';
       if (lrc) {
         const parsed = parseLRCNoFlag(lrc);
-        transLinesByLang[lang] = parsed;
+        transLinesByLang[langKey] = parsed;
       } else {
-        needDeepL.push(lang);
+        needDeepL.push(langKey);
       }
     });
 
@@ -2163,6 +2302,7 @@ async function applyLyricsText(rawLyrics) {
     const payload = {
       youtube_url: getCurrentVideoUrl(),
       video_id: getCurrentVideoId(),
+      translate_to: getRequestedLrchubTranslateLangs(),
       candidate_id: getCandidateId(cand, idx),
       candidate: cand || null
     };
@@ -2173,6 +2313,8 @@ async function applyLyricsText(rawLyrics) {
       const next = {
         ...(cand || {}),
         lyrics: res.lyrics,
+        translations: res.translations || cand?.translations || null,
+        lrcMap: res.lrcMap || cand?.lrcMap || null,
         has_synced: typeof res.has_synced === 'boolean' ? res.has_synced : !!/\[\d+:\d{2}(?:\.\d{1,3})?\]/.test(res.lyrics)
       };
       lyricsCandidates[idx] = next;
@@ -2326,6 +2468,10 @@ async function applyLyricsText(rawLyrics) {
     }
     selectedCandidateId = candId;
     dynamicLines = null;
+    lyricsTranslationMap = {
+      ...normalizeTranslationsToLrcMapLocal(cand.lrcMap),
+      ...normalizeTranslationsToLrcMapLocal(cand.translations)
+    };
     duetSubDynamicLines = null;
     _duetExcludedTimes = new Set();
     if (currentKey) {
@@ -2333,6 +2479,7 @@ async function applyLyricsText(rawLyrics) {
         lyrics: cand.lyrics,
         dynamicLines: null,
         noLyrics: false,
+        lrcMap: lyricsTranslationMap || null,
         candidateId: cand.id || candId || null
       });
     }
@@ -2406,12 +2553,7 @@ async function applyLyricsText(rawLyrics) {
       });
     }
 
-    if (!Object.prototype.hasOwnProperty.call(next.byRequest, 'lock_current_sync')) {
-      next.byRequest.lock_current_sync = !!(config && (config.SyncLocked || config.syncLocked || config.ReadmeLocked || config.readmeLocked));
-    }
-    if (!Object.prototype.hasOwnProperty.call(next.byRequest, 'lock_current_dynamic')) {
-      next.byRequest.lock_current_dynamic = !!(config && (config.dynmicLock || config.dynamicLocked || config.DynamicLocked));
-    }
+    // Default lock states removed as per user request
 
     next.sync = !!next.byRequest.lock_current_sync || !!next.sync;
     next.dynamic = !!next.byRequest.lock_current_dynamic || !!next.dynamic;
@@ -2500,8 +2642,7 @@ async function applyLyricsText(rawLyrics) {
       if (mergedRequests.some(r => String(r.request || r.id || '').toLowerCase() === idLower)) return;
       mergedRequests.push({ request: id, label, target });
     };
-    ensureRequest('lock_current_sync', '同期歌詞を確定 (Lock sync)', 'sync');
-    ensureRequest('lock_current_dynamic', '動く歌詞を確定 (Lock dynamic)', 'dynamic');
+    // ensureRequest for lock_current_sync and lock_current_dynamic removed as per user request
     const activeReqs = mergedRequests.filter(r => {
       if (!r) return false;
       if (r.has_lyrics) return true;
@@ -3517,7 +3658,41 @@ function renderSettingsPanel() {
     if(isYTMPremiumUser()) setupMovieMode(); //moviemode setup
   }
 
-  async function loadLyrics(meta) {
+  let lyricsLateRetryTimer = null;
+  let lyricsLateRetryKey = null;
+  const LYRICS_LATE_RETRY_DELAYS_MS = [15000, 30000];
+
+  function clearLyricsLateRetry(targetKey = null) {
+    if (targetKey && lyricsLateRetryKey && lyricsLateRetryKey !== targetKey) return;
+    if (lyricsLateRetryTimer) {
+      clearTimeout(lyricsLateRetryTimer);
+      lyricsLateRetryTimer = null;
+    }
+    lyricsLateRetryKey = null;
+  }
+
+  function scheduleLyricsLateRetry(meta, targetKey, attempt = 0) {
+    if (!targetKey || currentKey !== targetKey) return;
+    if (lyricsLateRetryTimer) return;
+    if (attempt >= LYRICS_LATE_RETRY_DELAYS_MS.length) return;
+
+    const delayMs = LYRICS_LATE_RETRY_DELAYS_MS[attempt];
+    lyricsLateRetryKey = targetKey;
+    lyricsLateRetryTimer = setTimeout(() => {
+      lyricsLateRetryTimer = null;
+      lyricsLateRetryKey = null;
+      if (currentKey !== targetKey) return;
+
+      const metaNow = getMetadata() || meta;
+      if (!metaNow) return;
+      const keyNow = `${metaNow.title}///${metaNow.artist}`;
+      if (keyNow !== targetKey) return;
+
+      loadLyrics(metaNow, { lateRetryAttempt: attempt + 1 });
+    }, delayMs);
+  }
+
+  async function loadLyrics(meta, options = {}) {
     if (!config.deepLKey) config.deepLKey = await storage.get('ytm_deepl_key');
     const cachedTrans = await storage.get('ytm_trans_enabled');
     if (cachedTrans !== null && cachedTrans !== undefined) config.useTrans = cachedTrans;
@@ -3545,6 +3720,7 @@ function renderSettingsPanel() {
     lyricsRequests = null;
     lyricsConfig = null;
     lyricsLockState = null;
+    lyricsTranslationMap = {};
     setLyricsMeaningData(null);
     let data = null;
     let noLyricsCached = false;
@@ -3562,6 +3738,12 @@ function renderSettingsPanel() {
         if (Array.isArray(cached.requests)) lyricsRequests = cached.requests;
         if (cached.config) lyricsConfig = cached.config;
         if (cached.lockState && typeof cached.lockState === 'object') lyricsLockState = cached.lockState;
+        if (cached.lrcMap || cached.translations) {
+          lyricsTranslationMap = {
+            ...normalizeTranslationsToLrcMapLocal(cached.lrcMap),
+            ...normalizeTranslationsToLrcMapLocal(cached.translations)
+          };
+        }
         if (cached.meaningData) setLyricsMeaningData(cached.meaningData);
       }
     }
@@ -3575,9 +3757,12 @@ function renderSettingsPanel() {
         const artist = meta.artist;
         const youtube_url = getCurrentVideoUrl();
         const video_id = getCurrentVideoId();
+        const translate_to = getRequestedLrchubTranslateLangs();
+        const payload = { track, artist, youtube_url, video_id, use_lrclib: config.useLrcLibFallback };
+        if (translate_to.length) payload.translate_to = translate_to;
         const res = await new Promise(resolve => {
           chrome.runtime.sendMessage(
-            { type: 'GET_LYRICS', payload: { track, artist, youtube_url, video_id, use_lrclib: config.useLrcLibFallback } },
+            { type: 'GET_LYRICS', payload },
             resolve
           );
         });
@@ -3586,6 +3771,11 @@ function renderSettingsPanel() {
         lyricsConfig = res?.config || null;
         syncLyricsLockState();
         lyricsCandidates = Array.isArray(res?.candidates) ? res.candidates : null;
+        lyricsTranslationMap = {
+          ...(lyricsTranslationMap || {}),
+          ...normalizeTranslationsToLrcMapLocal(res?.lrcMap),
+          ...normalizeTranslationsToLrcMapLocal(res?.translations)
+        };
         refreshCandidateMenu();
         refreshLockMenu();
         if (res?.meaningData) setLyricsMeaningData(res.meaningData);
@@ -3596,6 +3786,7 @@ function renderSettingsPanel() {
           gotLyrics = true;
           if (Array.isArray(res.dynamicLines) && res.dynamicLines.length) dynamicLines = res.dynamicLines;
           if (thisKey === currentKey) {
+            clearLyricsLateRetry(thisKey);
             storage.set(thisKey, {
               lyrics: data,
               dynamicLines: dynamicLines || null,
@@ -3603,6 +3794,7 @@ function renderSettingsPanel() {
               subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
               meaningData: lyricsMeaning || null,
               candidates: lyricsCandidates || null,
+              lrcMap: lyricsTranslationMap || null,
               requests: lyricsRequests || null,
               config: lyricsConfig || null,
               lockState: lyricsLockState || null
@@ -3614,9 +3806,10 @@ function renderSettingsPanel() {
       } catch (e) {
         console.error('GET_LYRICS failed', e);
       }
-      if (!gotLyrics && thisKey === currentKey) {
+      if (!gotLyrics && !data && thisKey === currentKey) {
         storage.set(thisKey, NO_LYRICS_SENTINEL);
         noLyricsCached = true;
+        scheduleLyricsLateRetry(meta, thisKey, options.lateRetryAttempt || 0);
       }
     if (thisKey !== currentKey) return;
     if (!data) {
@@ -4442,6 +4635,7 @@ const optimizeLineBreaks = (text) => {
         isFirstSongDetected = false;
       }
 
+      clearLyricsLateRetry();
 
       currentKey = key;
       lyricsData = [];
@@ -4453,6 +4647,7 @@ const optimizeLineBreaks = (text) => {
       lyricsRequests = null;
       lyricsConfig = null;
       lyricsLockState = null;
+      lyricsTranslationMap = {};
       setLyricsMeaningData(null);
       hideMeaningSummaryPopup();
       shareMode = false;
@@ -4485,7 +4680,13 @@ const optimizeLineBreaks = (text) => {
       refreshCandidateMenu();
       refreshLockMenu();
       if (ui.lyrics) ui.lyrics.scrollTop = 0;
-      loadLyrics(meta);
+      setTimeout(() => {
+        if (currentKey !== key) return;
+        const metaNow = getMetadata() || meta;
+        const keyNow = `${metaNow.title}///${metaNow.artist}`;
+        if (keyNow !== key) return;
+        loadLyrics(metaNow);
+      }, 800);
     }
   };
 

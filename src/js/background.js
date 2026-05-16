@@ -282,36 +282,83 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         } catch (e) {}
       };
 
+      const sendHubLyrics = (hubRes, sourceLabel) => {
+        const candidates = Array.isArray(hubRes.candidates) ? hubRes.candidates : [];
+        console.log(`[BG] Won: ${sourceLabel}`);
+        sendOnce({
+          success: true,
+          lyrics: hubRes.lyrics,
+          dynamicLines: hubRes.dynamicLines || null,
+          subLyrics: '',
+          hasSelectCandidates: candidates.length > 1,
+          candidates,
+          config: hubRes.config || null,
+          requests: hubRes.requests || [],
+          meaningData: hubRes.explanations || null,
+          songSummary: hubRes.song_summary || null,
+          translations: hubRes.translations || null,
+          lrcMap: {
+            ...API.normalizeLrchubTranslations(hubRes.lrc_map),
+            ...API.normalizeLrchubTranslations(hubRes.lrcMap),
+            ...API.normalizeLrchubTranslations(hubRes.translations)
+          },
+        });
+      };
+
+      const lrchubPrimaryWaitMs = 10000;
+
       // 1) LRCHub から取得
       try {
+        const lrchubStartedAt = Date.now();
         const hubRes = await API.withTimeout(
           API.fetchFromLrchub({ track, artist, youtube_url, video_id, offset_ms, translate_to, translation_source }),
-          5000,
+          lrchubPrimaryWaitMs,
           'lrchub'
         );
 
         if (hubRes && hubRes.lyrics && hubRes.lyrics.trim()) {
-          console.log('[BG] Won: LRCHub');
-          sendOnce({
-            success: true,
-            lyrics: hubRes.lyrics,
-            dynamicLines: hubRes.dynamicLines || null,
-            subLyrics: '',
-            hasSelectCandidates: false,
-            candidates: [],
-            config: hubRes.config || null,
-            requests: hubRes.requests || [],
-            meaningData: hubRes.explanations || null,
-            songSummary: hubRes.song_summary || null,
-            translations: hubRes.translations || null,
-          });
+          sendHubLyrics(hubRes, 'LRCHub');
           return;
         }
+
+        await API.delay(lrchubPrimaryWaitMs - (Date.now() - lrchubStartedAt));
       } catch (e) {
         console.warn('[BG] LRCHub fetch failed:', e);
       }
 
-      // 2) LrcLib にフォールバック
+      // 2) LRCHub POST retry. This mirrors an F5 reload more closely than search.
+      try {
+        const hubRetryRes = await API.withTimeout(
+          API.fetchFromLrchub({ track, artist, youtube_url, video_id, offset_ms, translate_to, translation_source }),
+          lrchubPrimaryWaitMs,
+          'lrchub retry'
+        );
+
+        if (hubRetryRes && hubRetryRes.lyrics && hubRetryRes.lyrics.trim()) {
+          sendHubLyrics(hubRetryRes, 'LRCHub retry');
+          return;
+        }
+      } catch (e) {
+        console.warn('[BG] LRCHub retry fetch failed:', e);
+      }
+
+      // 3) LRCHub search fallback
+      try {
+        const hubSearchRes = await API.withTimeout(
+          API.fetchFromLrchubSearch({ track, artist, limit: 30, translate_to }),
+          5000,
+          'lrchub search'
+        );
+
+        if (hubSearchRes && hubSearchRes.lyrics && hubSearchRes.lyrics.trim()) {
+          sendHubLyrics(hubSearchRes, 'LRCHub search');
+          return;
+        }
+      } catch (e) {
+        console.warn('[BG] LRCHub search fetch failed:', e);
+      }
+
+      // 4) LrcLib fallback (only when enabled)
       if (use_lrclib) {
         try {
           const lrcLibRes = await API.fetchFromLrcLib(track, artist);
@@ -341,15 +388,75 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
+  if (req.type === 'GET_CANDIDATE_LYRICS') {
+    const { candidate, translate_to } = req.payload || {};
+
+    (async () => {
+      try {
+        const candRes = await API.fetchLrchubCandidateLyrics(candidate, translate_to);
+        if (candRes && candRes.lyrics && candRes.lyrics.trim()) {
+          sendResponse({
+            success: true,
+            lyrics: candRes.lyrics,
+            dynamicLines: candRes.dynamicLines || null,
+            translations: candRes.translations || null,
+            lrcMap: {
+              ...API.normalizeLrchubTranslations(candRes.lrc_map),
+              ...API.normalizeLrchubTranslations(candRes.lrcMap),
+              ...API.normalizeLrchubTranslations(candRes.translations)
+            },
+            has_synced: /\[\d+:\d{2}(?:\.\d{1,3})?\]/.test(candRes.lyrics)
+          });
+          return;
+        }
+        sendResponse({ success: false, lyrics: '' });
+      } catch (e) {
+        sendResponse({ success: false, error: String(e) });
+      }
+    })();
+    return true;
+  }
+
   if (req.type === 'GET_TRANSLATION') {
     const payload = req.payload || {};
-    const { youtube_url, video_id, lang, langs } = payload;
+    const { track, artist, youtube_url, video_id, lang, langs, translation_source } = payload;
 
     (async () => {
       const vid = video_id || API.extractVideoIdFromUrl(youtube_url);
       const reqLangs = Array.isArray(langs) && langs.length ? langs : (lang ? [lang] : []);
+      const translateTo = reqLangs.map(API.toLrchubTranslateLang).filter(Boolean);
       
       try {
+        let lrcMap = {};
+        if (translateTo.length) {
+          const hubRes = await API.withTimeout(
+            API.fetchFromLrchub({
+              track,
+              artist,
+              youtube_url,
+              video_id: video_id || vid,
+              translate_to: translateTo,
+              translation_source
+            }),
+            20000,
+            'lrchub translation'
+          );
+          lrcMap = {
+            ...API.normalizeLrchubTranslations(hubRes?.lrc_map),
+            ...API.normalizeLrchubTranslations(hubRes?.lrcMap),
+            ...API.normalizeLrchubTranslations(hubRes?.translations)
+          };
+        }
+
+        if (Object.keys(lrcMap).length) {
+          sendResponse({
+            success: true,
+            lrcMap,
+            missing: reqLangs.filter(l => !lrcMap[API.toUiLangKey(l)])
+          });
+          return;
+        }
+
         const url = new URL(`https://lrchub.coreone.work/api/translation?_=${API.getCacheBuster()}`);
         if (youtube_url) url.searchParams.set('youtube_url', youtube_url);
         else if (video_id) url.searchParams.set('video_id', video_id);
@@ -360,7 +467,11 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         const res = await fetch(url.toString()).then(r => r.json());
         sendResponse({ 
           success: true, 
-          lrcMap: res.lrc_map || {}, 
+          lrcMap: {
+            ...API.normalizeLrchubTranslations(res.lrc_map),
+            ...API.normalizeLrchubTranslations(res.lrcMap),
+            ...API.normalizeLrchubTranslations(res.translations)
+          }, 
           missing: res.missing_langs || [] 
         });
       } catch (e) {
