@@ -1,1916 +1,1937 @@
-  const resolveDeepLTargetLang = (lang) => {
-    switch ((lang || '').toLowerCase()) {
-      case 'en': case 'en-us': case 'en-gb': return 'EN';
-      case 'ja': return 'JA';
-      case 'ko': return 'KO';
-      case 'fr': return 'FR';
-      case 'de': return 'DE';
-      case 'es': return 'ES';
-      case 'zh': case 'zh-cn': case 'zh-tw': return 'ZH';
-      default: return 'JA';
-    }
-  };
+const resolveDeepLTargetLang = (lang) => {
+  switch ((lang || '').toLowerCase()) {
+    case 'en': case 'en-us': case 'en-gb': return 'EN';
+    case 'ja': return 'JA';
+    case 'ko': return 'KO';
+    case 'fr': return 'FR';
+    case 'de': return 'DE';
+    case 'es': return 'ES';
+    case 'zh': case 'zh-cn': case 'zh-tw': return 'ZH';
+    default: return 'JA';
+  }
+};
 
-  const parseLRCInternal = (lrc) => {
-    if (!lrc) return { lines: [], hasTs: false };
-    const tagTest = /\[\d{2}:\d{2}\.\d{2,3}\]/;
+const parseLRCInternal = (lrc) => {
+  if (!lrc) return { lines: [], hasTs: false };
+  const tagTest = /\[\d{2}:\d{2}\.\d{2,3}\]/;
 
-    // タイムスタンプがない場合
-    if (!tagTest.test(lrc)) {
-      // 空行も保持して、翻訳時に行が詰まらないようにする
-      const lines = lrc.split(/\r?\n/).map(line => {
-        const text = (line ?? '').replace(/^\s+|\s+$/g, '');
-        return { time: null, text };
-      });
-      return { lines, hasTs: false };
-    }
+  // タイムスタンプがない場合
+  if (!tagTest.test(lrc)) {
+    // 空行も保持して、翻訳時に行が詰まらないようにする
+    const lines = lrc.split(/\r?\n/).map(line => {
+      const text = (line ?? '').replace(/^\s+|\s+$/g, '');
+      return { time: null, text };
+    });
+    return { lines, hasTs: false };
+  }
 
-    // タイムスタンプがある場合
-    const tagExp = /\[(\d{2}):(\d{2})\.(\d{2,3})\]/g;
-    const result = [];
-    let match;
-    let lastTime = null;
-    let lastIndex = 0;
+  // タイムスタンプがある場合
+  const tagExp = /\[(\d{2}):(\d{2})\.(\d{2,3})\]/g;
+  const result = [];
+  let match;
+  let lastTime = null;
+  let lastIndex = 0;
 
-    while ((match = tagExp.exec(lrc)) !== null) {
-      const min = parseInt(match[1], 10);
-      const sec = parseInt(match[2], 10);
-      const fracStr = match[3];
-      const frac = parseInt(fracStr, 10) / (fracStr.length === 2 ? 100 : 1000);
-      const time = min * 60 + sec + frac;
+  while ((match = tagExp.exec(lrc)) !== null) {
+    const min = parseInt(match[1], 10);
+    const sec = parseInt(match[2], 10);
+    const fracStr = match[3];
+    const frac = parseInt(fracStr, 10) / (fracStr.length === 2 ? 100 : 1000);
+    const time = min * 60 + sec + frac;
 
-      if (lastTime !== null) {
-        const rawText = lrc.slice(lastIndex, match.index);
-        const cleaned = rawText.replace(/\r?\n/g, ' ');
-        const text = cleaned.trim();
-        const hasLineBreak = /[\r\n]/.test(rawText);
-        if (text || hasLineBreak) {
-          result.push({ time: lastTime, text });
-        }
-      }
-      lastTime = time;
-      lastIndex = tagExp.lastIndex;
-    }
-
-    // 最後の行の処理
-    if (lastTime !== null && lastIndex < lrc.length) {
-      const rawText = lrc.slice(lastIndex);
+    if (lastTime !== null) {
+      const rawText = lrc.slice(lastIndex, match.index);
       const cleaned = rawText.replace(/\r?\n/g, ' ');
       const text = cleaned.trim();
-      // ★修正: 空行(明示的な改行のみ)も保持してタイムスタンプのズレを防ぐ
       const hasLineBreak = /[\r\n]/.test(rawText);
       if (text || hasLineBreak) {
         result.push({ time: lastTime, text });
       }
     }
+    lastTime = time;
+    lastIndex = tagExp.lastIndex;
+  }
 
-    result.sort((a, b) => (a.time || 0) - (b.time || 0));
-    return { lines: result, hasTs: true };
-  };
-
-
-  const parseBaseLRC = (lrc) => {
-    const { lines, hasTs } = parseLRCInternal(lrc);
-    hasTimestamp = hasTs;
-    return lines;
-  };
-
-  // ===== duet helpers =====
-  const timeKey = (t) => {
-    if (typeof t !== 'number' || Number.isNaN(t)) return 'NaN';
-    // milliseconds precision is enough for LRC tags
-    return t.toFixed(3);
-  };
-
-  const DUET_TIME_TOLERANCE = 0.15;
-  const DUET_DUPLICATE_TOLERANCE = 1.0;
-  const SAME_TIMESTAMP_TOLERANCE = 0.05;
-  const DYNAMIC_ACTIVE_TAIL_SEC = 0.2;
-  const DYNAMIC_OVERLAP_TOLERANCE = 0.05;
-
-  const normalizeLyricCompareText = (text) => String(text || '')
-    .replace(/\u00A0/g, ' ')
-    .replace(/\s+/g, '')
-    .replace(/[.,，。!！?？:：;；'"\-‐‑‒–—―~〜()（）\[\]{}<>「」『』【】]/g, '')
-    .toLowerCase()
-    .trim();
-
-  const normalizeLyricCompareTextStrict = (text) => String(text || '')
-    .normalize('NFKC')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;|&#160;/gi, ' ')
-    .replace(/\u00A0/g, ' ')
-    .replace(/\s+/g, '')
-    .replace(/[\p{P}\p{S}\p{C}]/gu, '')
-    .toLowerCase()
-    .trim();
-
-  const extractDynamicLineText = (line) => {
-    if (typeof line?.text === 'string' && line.text.length) return line.text;
-    if (Array.isArray(line?.chars)) {
-      return line.chars.map(c => c?.c || c?.text || c?.caption || '').join('');
+  // 最後の行の処理
+  if (lastTime !== null && lastIndex < lrc.length) {
+    const rawText = lrc.slice(lastIndex);
+    const cleaned = rawText.replace(/\r?\n/g, ' ');
+    const text = cleaned.trim();
+    // ★修正: 空行(明示的な改行のみ)も保持してタイムスタンプのズレを防ぐ
+    const hasLineBreak = /[\r\n]/.test(rawText);
+    if (text || hasLineBreak) {
+      result.push({ time: lastTime, text });
     }
-    return '';
-  };
+  }
 
-  const getDynamicLineStartSec = (line) => {
-    if (typeof line?.startTimeMs === 'number') return line.startTimeMs / 1000;
-    if (typeof line?.startTimeMs === 'string') {
-      const n = Number(line.startTimeMs);
-      if (!Number.isNaN(n)) return n / 1000;
-    }
-    if (typeof line?.time === 'number') return line.time;
-    if (Array.isArray(line?.chars) && line.chars.length) {
-      const ts = line.chars
-        .map(c => (typeof c?.t === 'number' ? c.t : null))
-        .filter(v => v != null);
-      if (ts.length) return Math.min(...ts) / 1000;
-    }
-    return null;
-  };
+  result.sort((a, b) => (a.time || 0) - (b.time || 0));
+  return { lines: result, hasTs: true };
+};
 
-  const getDynamicLineEndSec = (line) => {
-    if (!line) return null;
-    if (typeof line.__ytmEndSec === 'number' && Number.isFinite(line.__ytmEndSec)) {
-      return line.__ytmEndSec;
-    }
 
-    const startSec = getDynamicLineStartSec(line);
-    let endSec = null;
+const parseBaseLRC = (lrc) => {
+  const { lines, hasTs } = parseLRCInternal(lrc);
+  hasTimestamp = hasTs;
+  return lines;
+};
 
-    if (typeof line?.endTimeMs === 'number' && Number.isFinite(line.endTimeMs)) {
-      endSec = line.endTimeMs / 1000;
-    } else if (typeof line?.endTimeMs === 'string') {
-      const n = Number(line.endTimeMs);
-      if (Number.isFinite(n)) endSec = n / 1000;
-    }
+// ===== duet helpers =====
+const timeKey = (t) => {
+  if (typeof t !== 'number' || Number.isNaN(t)) return 'NaN';
+  // milliseconds precision is enough for LRC tags
+  return t.toFixed(3);
+};
 
-    if (Array.isArray(line?.chars) && line.chars.length) {
-      const lastCharMs = line.chars
-        .map(ch => {
-          if (typeof ch?.t === 'number' && Number.isFinite(ch.t)) return ch.t;
-          if (typeof ch?.t === 'string') {
-            const n = Number(ch.t);
-            if (Number.isFinite(n)) return n;
-          }
-          return null;
-        })
-        .filter(v => v != null)
-        .reduce((max, v) => Math.max(max, v), Number.NEGATIVE_INFINITY);
+const DUET_TIME_TOLERANCE = 0.15;
+const DUET_DUPLICATE_TOLERANCE = 1.0;
+const SAME_TIMESTAMP_TOLERANCE = 0.05;
+const DYNAMIC_ACTIVE_TAIL_SEC = 0.2;
+const DYNAMIC_OVERLAP_TOLERANCE = 0.05;
 
-      if (Number.isFinite(lastCharMs)) {
-        const charTailSec = (lastCharMs / 1000) + DYNAMIC_ACTIVE_TAIL_SEC;
-        endSec = (typeof endSec === 'number') ? Math.max(endSec, charTailSec) : charTailSec;
-      }
-    }
+const normalizeLyricCompareText = (text) => String(text || '')
+  .replace(/\u00A0/g, ' ')
+  .replace(/\s+/g, '')
+  .replace(/[.,，。!！?？:：;；'"\-‐‑‒–—―~〜()（）\[\]{}<>「」『』【】]/g, '')
+  .toLowerCase()
+  .trim();
 
-    if (!(typeof endSec === 'number') && typeof startSec === 'number') {
-      endSec = startSec + 1.5;
-    }
+const normalizeLyricCompareTextStrict = (text) => String(text || '')
+  .normalize('NFKC')
+  .replace(/<[^>]*>/g, '')
+  .replace(/&nbsp;|&#160;/gi, ' ')
+  .replace(/\u00A0/g, ' ')
+  .replace(/\s+/g, '')
+  .replace(/[\p{P}\p{S}\p{C}]/gu, '')
+  .toLowerCase()
+  .trim();
 
-    if (typeof startSec === 'number' && typeof endSec === 'number' && endSec <= startSec) {
-      endSec = startSec + DYNAMIC_ACTIVE_TAIL_SEC;
-    }
+const extractDynamicLineText = (line) => {
+  if (typeof line?.text === 'string' && line.text.length) return line.text;
+  if (Array.isArray(line?.chars)) {
+    return line.chars.map(c => c?.c || c?.text || c?.caption || '').join('');
+  }
+  return '';
+};
 
-    if (typeof endSec === 'number' && Number.isFinite(endSec)) {
-      line.__ytmEndSec = endSec;
-      return endSec;
-    }
-    return null;
-  };
+const getDynamicLineStartSec = (line) => {
+  if (typeof line?.startTimeMs === 'number') return line.startTimeMs / 1000;
+  if (typeof line?.startTimeMs === 'string') {
+    const n = Number(line.startTimeMs);
+    if (!Number.isNaN(n)) return n / 1000;
+  }
+  if (typeof line?.time === 'number') return line.time;
+  if (Array.isArray(line?.chars) && line.chars.length) {
+    const ts = line.chars
+      .map(c => (typeof c?.t === 'number' ? c.t : null))
+      .filter(v => v != null);
+    if (ts.length) return Math.min(...ts) / 1000;
+  }
+  return null;
+};
 
-  const isLineDynamicallyActiveAtTime = (line, timeSec, tolerance = DYNAMIC_OVERLAP_TOLERANCE) => {
-    const startSec = (typeof line?._dynamicRenderStartSec === 'number' && Number.isFinite(line._dynamicRenderStartSec))
-      ? line._dynamicRenderStartSec
-      : null;
-    const endSec = (typeof line?._dynamicRenderEndSec === 'number' && Number.isFinite(line._dynamicRenderEndSec))
-      ? line._dynamicRenderEndSec
-      : null;
+const getDynamicLineEndSec = (line) => {
+  if (!line) return null;
+  if (typeof line.__ytmEndSec === 'number' && Number.isFinite(line.__ytmEndSec)) {
+    return line.__ytmEndSec;
+  }
 
-    return typeof startSec === 'number' &&
-      typeof endSec === 'number' &&
-      (timeSec + tolerance) >= startSec &&
-      timeSec <= (endSec + tolerance);
-  };
+  const startSec = getDynamicLineStartSec(line);
+  let endSec = null;
 
-  const isSameTimestamp = (a, b, tolerance = SAME_TIMESTAMP_TOLERANCE) =>
-    typeof a === 'number' &&
-    typeof b === 'number' &&
-    Math.abs(a - b) <= tolerance;
+  if (typeof line?.endTimeMs === 'number' && Number.isFinite(line.endTimeMs)) {
+    endSec = line.endTimeMs / 1000;
+  } else if (typeof line?.endTimeMs === 'string') {
+    const n = Number(line.endTimeMs);
+    if (Number.isFinite(n)) endSec = n / 1000;
+  }
 
-  const scoreLyricTextMatch = (a, b) => {
-    if (!a || !b) return 0;
-    if (a === b) return 100;
-    if (a.includes(b) || b.includes(a)) return 60;
-    return 0;
-  };
-
-  const findCrossSideDuplicateIndex = (lines, line) => {
-    if (!Array.isArray(lines) || !lines.length || !line) return -1;
-
-    const lineText = normalizeLyricCompareTextStrict(line?.text);
-    if (!lineText) return -1;
-
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const existing = lines[i];
-      if (!isSameTimestamp(existing?.time, line?.time, DUET_DUPLICATE_TOLERANCE)) {
-        if (typeof existing?.time === 'number' && typeof line?.time === 'number' && existing.time < line.time - DUET_DUPLICATE_TOLERANCE) {
-          break;
+  if (Array.isArray(line?.chars) && line.chars.length) {
+    const lastCharMs = line.chars
+      .map(ch => {
+        if (typeof ch?.t === 'number' && Number.isFinite(ch.t)) return ch.t;
+        if (typeof ch?.t === 'string') {
+          const n = Number(ch.t);
+          if (Number.isFinite(n)) return n;
         }
-        continue;
-      }
+        return null;
+      })
+      .filter(v => v != null)
+      .reduce((max, v) => Math.max(max, v), Number.NEGATIVE_INFINITY);
 
-      const isCrossSideDuplicate = existing?.duetSide && line?.duetSide && existing.duetSide !== line.duetSide;
-      if (!isCrossSideDuplicate) continue;
+    if (Number.isFinite(lastCharMs)) {
+      const charTailSec = (lastCharMs / 1000) + DYNAMIC_ACTIVE_TAIL_SEC;
+      endSec = (typeof endSec === 'number') ? Math.max(endSec, charTailSec) : charTailSec;
+    }
+  }
 
-      const existingText = normalizeLyricCompareTextStrict(existing?.text);
-      if (existingText && scoreLyricTextMatch(existingText, lineText) >= 100) {
-        return i;
+  if (!(typeof endSec === 'number') && typeof startSec === 'number') {
+    endSec = startSec + 1.5;
+  }
+
+  if (typeof startSec === 'number' && typeof endSec === 'number' && endSec <= startSec) {
+    endSec = startSec + DYNAMIC_ACTIVE_TAIL_SEC;
+  }
+
+  if (typeof endSec === 'number' && Number.isFinite(endSec)) {
+    line.__ytmEndSec = endSec;
+    return endSec;
+  }
+  return null;
+};
+
+const isLineDynamicallyActiveAtTime = (line, timeSec, tolerance = DYNAMIC_OVERLAP_TOLERANCE) => {
+  const startSec = (typeof line?._dynamicRenderStartSec === 'number' && Number.isFinite(line._dynamicRenderStartSec))
+    ? line._dynamicRenderStartSec
+    : null;
+  const endSec = (typeof line?._dynamicRenderEndSec === 'number' && Number.isFinite(line._dynamicRenderEndSec))
+    ? line._dynamicRenderEndSec
+    : null;
+
+  return typeof startSec === 'number' &&
+    typeof endSec === 'number' &&
+    (timeSec + tolerance) >= startSec &&
+    timeSec <= (endSec + tolerance);
+};
+
+const isSameTimestamp = (a, b, tolerance = SAME_TIMESTAMP_TOLERANCE) =>
+  typeof a === 'number' &&
+  typeof b === 'number' &&
+  Math.abs(a - b) <= tolerance;
+
+const scoreLyricTextMatch = (a, b) => {
+  if (!a || !b) return 0;
+  if (a === b) return 100;
+  if (a.includes(b) || b.includes(a)) return 60;
+  return 0;
+};
+
+const findCrossSideDuplicateIndex = (lines, line) => {
+  if (!Array.isArray(lines) || !lines.length || !line) return -1;
+
+  const lineText = normalizeLyricCompareTextStrict(line?.text);
+  if (!lineText) return -1;
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const existing = lines[i];
+    if (!isSameTimestamp(existing?.time, line?.time, DUET_DUPLICATE_TOLERANCE)) {
+      if (typeof existing?.time === 'number' && typeof line?.time === 'number' && existing.time < line.time - DUET_DUPLICATE_TOLERANCE) {
+        break;
       }
+      continue;
     }
 
-    return -1;
-  };
+    const isCrossSideDuplicate = existing?.duetSide && line?.duetSide && existing.duetSide !== line.duetSide;
+    if (!isCrossSideDuplicate) continue;
 
-  const preferDuplicateMainLine = (existingLine, incomingLine) => {
-    if (!existingLine) return incomingLine || null;
-    if (!incomingLine) return existingLine;
-    if (existingLine.duetSide === incomingLine.duetSide) return existingLine;
-    if (incomingLine.duetSide === 'left') return incomingLine;
-    if (existingLine.duetSide === 'left') return existingLine;
-    return existingLine;
-  };
+    const existingText = normalizeLyricCompareTextStrict(existing?.text);
+    if (existingText && scoreLyricTextMatch(existingText, lineText) >= 100) {
+      return i;
+    }
+  }
 
-  const findDynamicLineForRender = (line, sourceLines, usedIndexes) => {
-    if (!line || typeof line.time !== 'number') return null;
-    if (!Array.isArray(sourceLines) || !sourceLines.length) return null;
+  return -1;
+};
 
-    const wantedText = normalizeLyricCompareTextStrict(line.text);
-    const candidates = [];
+const preferDuplicateMainLine = (existingLine, incomingLine) => {
+  if (!existingLine) return incomingLine || null;
+  if (!incomingLine) return existingLine;
+  if (existingLine.duetSide === incomingLine.duetSide) return existingLine;
+  if (incomingLine.duetSide === 'left') return incomingLine;
+  if (existingLine.duetSide === 'left') return existingLine;
+  return existingLine;
+};
 
-    sourceLines.forEach((dynLine, idx) => {
-      const startSec = getDynamicLineStartSec(dynLine);
-      if (typeof startSec !== 'number') return;
+const findDynamicLineForRender = (line, sourceLines, usedIndexes) => {
+  if (!line || typeof line.time !== 'number') return null;
+  if (!Array.isArray(sourceLines) || !sourceLines.length) return null;
 
-      const timeDiff = Math.abs(startSec - line.time);
-      if (timeDiff > DUET_TIME_TOLERANCE) return;
+  const wantedText = normalizeLyricCompareTextStrict(line.text);
+  const candidates = [];
 
-      const dynText = normalizeLyricCompareTextStrict(extractDynamicLineText(dynLine));
-      const textScore = scoreLyricTextMatch(wantedText, dynText);
+  sourceLines.forEach((dynLine, idx) => {
+    const startSec = getDynamicLineStartSec(dynLine);
+    if (typeof startSec !== 'number') return;
 
-      candidates.push({
-        idx,
-        dynLine,
-        timeDiff,
-        textScore,
-        used: !!(usedIndexes && usedIndexes.has(idx)),
-      });
+    const timeDiff = Math.abs(startSec - line.time);
+    if (timeDiff > DUET_TIME_TOLERANCE) return;
+
+    const dynText = normalizeLyricCompareTextStrict(extractDynamicLineText(dynLine));
+    const textScore = scoreLyricTextMatch(wantedText, dynText);
+
+    candidates.push({
+      idx,
+      dynLine,
+      timeDiff,
+      textScore,
+      used: !!(usedIndexes && usedIndexes.has(idx)),
     });
+  });
 
-    if (!candidates.length) return null;
+  if (!candidates.length) return null;
 
-    candidates.sort((a, b) =>
-      Number(a.used) - Number(b.used) ||
-      b.textScore - a.textScore ||
-      a.timeDiff - b.timeDiff ||
-      a.idx - b.idx
-    );
+  candidates.sort((a, b) =>
+    Number(a.used) - Number(b.used) ||
+    b.textScore - a.textScore ||
+    a.timeDiff - b.timeDiff ||
+    a.idx - b.idx
+  );
 
-    const picked = candidates[0];
-    if (usedIndexes) usedIndexes.add(picked.idx);
-    return picked.dynLine;
+  const picked = candidates[0];
+  if (usedIndexes) usedIndexes.add(picked.idx);
+  return picked.dynLine;
+};
+
+// コンテンツマッチでDynamic LRC行を探す（時間が大きくずれている場合の1文字同期対応用）
+// timeTolerance: 秒単位の許容幅。1文字同期の場合は5.0秒推奨。
+const findDynamicLineByContent = (line, sourceLines, timeTolerance = 5.0) => {
+  if (!line || !Array.isArray(sourceLines) || !sourceLines.length) return null;
+  const wantedText = normalizeLyricCompareTextStrict(line.text);
+  if (!wantedText) return null;
+
+  let bestMatch = null;
+  let bestScore = 0;
+  let bestTimeDiff = Infinity;
+
+  sourceLines.forEach(dynLine => {
+    const startSec = getDynamicLineStartSec(dynLine);
+    if (typeof startSec !== 'number') return;
+    if (typeof line.time === 'number' && Math.abs(startSec - line.time) > timeTolerance) return;
+
+    const dynText = normalizeLyricCompareTextStrict(extractDynamicLineText(dynLine));
+    const score = scoreLyricTextMatch(wantedText, dynText);
+    if (score <= 0) return;
+
+    const timeDiff = typeof line.time === 'number' ? Math.abs(startSec - line.time) : 0;
+    // 同スコアなら時間が近い方を優先
+    if (score > bestScore || (score === bestScore && timeDiff < bestTimeDiff)) {
+      bestScore = score;
+      bestTimeDiff = timeDiff;
+      bestMatch = dynLine;
+    }
+  });
+
+  // 完全一致(100)のみ採用: 部分一致(60)だと文字数・内容が違うデータが当たり誤表示の原因になる
+  return bestScore >= 100 ? bestMatch : null;
+};
+
+// Dynamic.lrc形式のパーサー（sub.txt用）
+const parseDynamicLrcForSub = (text) => {
+  const out = [];
+  if (!text) return out;
+
+  const rows = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+  const parseLrcTimeToMsSub = (ts) => {
+    const s = String(ts || '').trim();
+    const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
+    if (!m) return null;
+    const mm = parseInt(m[1], 10);
+    const ss = parseInt(m[2], 10);
+    let frac = m[3] || '0';
+    if (frac.length === 1) frac = frac + '00';
+    else if (frac.length === 2) frac = frac + '0';
+    const ms = parseInt(frac.slice(0, 3), 10);
+    if (!Number.isFinite(mm) || !Number.isFinite(ss) || !Number.isFinite(ms)) return null;
+    return (mm * 60 + ss) * 1000 + ms;
   };
 
-  // コンテンツマッチでDynamic LRC行を探す（時間が大きくずれている場合の1文字同期対応用）
-  // timeTolerance: 秒単位の許容幅。1文字同期の場合は5.0秒推奨。
-  const findDynamicLineByContent = (line, sourceLines, timeTolerance = 5.0) => {
-    if (!line || !Array.isArray(sourceLines) || !sourceLines.length) return null;
-    const wantedText = normalizeLyricCompareTextStrict(line.text);
-    if (!wantedText) return null;
+  // 1st pass: parse lines
+  const parsed = [];
+  for (const raw of rows) {
+    const line = raw.trimEnd();
+    if (!line) continue;
 
-    let bestMatch = null;
-    let bestScore = 0;
-    let bestTimeDiff = Infinity;
+    const m = line.match(/^\[(\d+:\d{2}(?:\.\d{1,3})?)\]\s*(.*)$/);
+    if (!m) continue;
 
-    sourceLines.forEach(dynLine => {
-      const startSec = getDynamicLineStartSec(dynLine);
-      if (typeof startSec !== 'number') return;
-      if (typeof line.time === 'number' && Math.abs(startSec - line.time) > timeTolerance) return;
-
-      const dynText = normalizeLyricCompareTextStrict(extractDynamicLineText(dynLine));
-      const score = scoreLyricTextMatch(wantedText, dynText);
-      if (score <= 0) return;
-
-      const timeDiff = typeof line.time === 'number' ? Math.abs(startSec - line.time) : 0;
-      // 同スコアなら時間が近い方を優先
-      if (score > bestScore || (score === bestScore && timeDiff < bestTimeDiff)) {
-        bestScore = score;
-        bestTimeDiff = timeDiff;
-        bestMatch = dynLine;
-      }
+    parsed.push({
+      lineMs: parseLrcTimeToMsSub(m[1]),
+      rest: m[2] || '',
     });
+  }
 
-    // 完全一致(100)のみ採用: 部分一致(60)だと文字数・内容が違うデータが当たり誤表示の原因になる
-    return bestScore >= 100 ? bestMatch : null;
-  };
+  const pushDistributed = (chars, chunk, startMs, endMs) => {
+    if (!chunk) return;
+    const arr = Array.from(chunk);
+    const n = arr.length;
+    if (!n) return;
 
-  // Dynamic.lrc形式のパーサー（sub.txt用）
-  const parseDynamicLrcForSub = (text) => {
-    const out = [];
-    if (!text) return out;
+    const s = (typeof startMs === 'number') ? startMs : null;
+    const e = (typeof endMs === 'number') ? endMs : null;
 
-    const rows = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-
-    const parseLrcTimeToMsSub = (ts) => {
-      const s = String(ts || '').trim();
-      const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
-      if (!m) return null;
-      const mm = parseInt(m[1], 10);
-      const ss = parseInt(m[2], 10);
-      let frac = m[3] || '0';
-      if (frac.length === 1) frac = frac + '00';
-      else if (frac.length === 2) frac = frac + '0';
-      const ms = parseInt(frac.slice(0, 3), 10);
-      if (!Number.isFinite(mm) || !Number.isFinite(ss) || !Number.isFinite(ms)) return null;
-      return (mm * 60 + ss) * 1000 + ms;
-    };
-
-    // 1st pass: parse lines
-    const parsed = [];
-    for (const raw of rows) {
-      const line = raw.trimEnd();
-      if (!line) continue;
-
-      const m = line.match(/^\[(\d+:\d{2}(?:\.\d{1,3})?)\]\s*(.*)$/);
-      if (!m) continue;
-
-      parsed.push({
-        lineMs: parseLrcTimeToMsSub(m[1]),
-        rest: m[2] || '',
-      });
+    if (s == null) {
+      for (const ch of arr) chars.push({ t: 0, c: ch });
+      return;
     }
 
-    const pushDistributed = (chars, chunk, startMs, endMs) => {
-      if (!chunk) return;
-      const arr = Array.from(chunk);
-      const n = arr.length;
-      if (!n) return;
+    if (e == null || e <= s) {
+      for (const ch of arr) chars.push({ t: s, c: ch });
+      return;
+    }
 
-      const s = (typeof startMs === 'number') ? startMs : null;
-      const e = (typeof endMs === 'number') ? endMs : null;
+    const dur = Math.max(1, e - s);
+    const step = dur / n;
 
-      if (s == null) {
-        for (const ch of arr) chars.push({ t: 0, c: ch });
-        return;
-      }
+    for (let i = 0; i < n; i++) {
+      const t = s + Math.floor(step * i);
+      chars.push({ t, c: arr[i] });
+    }
+  };
 
-      if (e == null || e <= s) {
-        for (const ch of arr) chars.push({ t: s, c: ch });
-        return;
-      }
+  for (let li = 0; li < parsed.length; li++) {
+    const { lineMs, rest } = parsed[li];
+    const nextLineMs = (li + 1 < parsed.length && typeof parsed[li + 1].lineMs === 'number')
+      ? parsed[li + 1].lineMs
+      : null;
 
-      const dur = Math.max(1, e - s);
-      const step = dur / n;
+    const tagRe = /<(\d+:\d{2}(?:\.\d{1,3})?)>/g;
+    const chars = [];
 
-      for (let i = 0; i < n; i++) {
-        const t = s + Math.floor(step * i);
-        chars.push({ t, c: arr[i] });
-      }
-    };
+    let prevMs = null;
+    let prevEnd = 0;
 
-    for (let li = 0; li < parsed.length; li++) {
-      const { lineMs, rest } = parsed[li];
-      const nextLineMs = (li + 1 < parsed.length && typeof parsed[li + 1].lineMs === 'number')
-        ? parsed[li + 1].lineMs
-        : null;
+    while (true) {
+      const mm = tagRe.exec(rest);
+      if (!mm) break;
 
-      const tagRe = /<(\d+:\d{2}(?:\.\d{1,3})?)>/g;
-      const chars = [];
+      const tagMs = parseLrcTimeToMsSub(mm[1]);
 
-      let prevMs = null;
-      let prevEnd = 0;
-
-      while (true) {
-        const mm = tagRe.exec(rest);
-        if (!mm) break;
-
-        const tagMs = parseLrcTimeToMsSub(mm[1]);
-
-        if (prevMs == null && tagMs != null && mm.index > prevEnd) {
-          const chunk0 = rest.slice(prevEnd, mm.index);
-          pushDistributed(chars, chunk0, tagMs, tagMs);
-        }
-
-        if (prevMs != null) {
-          const chunk = rest.slice(prevEnd, mm.index);
-          pushDistributed(chars, chunk, prevMs, tagMs);
-        }
-
-        prevMs = tagMs;
-        prevEnd = mm.index + mm[0].length;
+      if (prevMs == null && tagMs != null && mm.index > prevEnd) {
+        const chunk0 = rest.slice(prevEnd, mm.index);
+        pushDistributed(chars, chunk0, tagMs, tagMs);
       }
 
       if (prevMs != null) {
-        const chunk = rest.slice(prevEnd);
-        let endMs = nextLineMs;
-        if (typeof endMs !== 'number') endMs = prevMs + 1500;
-        if (endMs <= prevMs) endMs = prevMs + 200;
-        pushDistributed(chars, chunk, prevMs, endMs);
+        const chunk = rest.slice(prevEnd, mm.index);
+        pushDistributed(chars, chunk, prevMs, tagMs);
       }
 
-      const textLine = chars.map(c => c.c).join('');
-
-      out.push({
-        startTimeMs: (typeof lineMs === 'number' ? lineMs : (chars.length ? chars[0].t : 0)),
-        text: textLine,
-        chars,
-      });
+      prevMs = tagMs;
+      prevEnd = mm.index + mm[0].length;
     }
 
-    return out;
-  };
-
-  // Dynamic.lrc形式かどうかを判定
-  const isDynamicLrcFormat = (text) => {
-    if (!text) return false;
-    // <00:00.00>形式のタグが含まれていればDynamic.lrc形式
-    return /<\d+:\d{2}(?:\.\d{1,3})?>/.test(text);
-  };
-
-  const parseSubLRC = (lrc) => {
-    // Dynamic.lrc形式の場合は専用パーサーを使用
-    if (isDynamicLrcFormat(lrc)) {
-      const dynLines = parseDynamicLrcForSub(lrc);
-      if (dynLines && dynLines.length) {
-        // dynamicLinesからLRC形式のlinesに変換
-        const lines = dynLines.map(dl => ({
-          time: (typeof dl.startTimeMs === 'number') ? dl.startTimeMs / 1000 : null,
-          text: dl.text || '',
-        }));
-        // サブ用のdynamicLinesを保存
-        duetSubDynamicLines = dynLines;
-        return { lines, hasTs: true, dynamicLines: dynLines };
-      }
-    }
-    
-    // 通常のLRC形式
-    duetSubDynamicLines = null;
-    const { lines, hasTs } = parseLRCInternal(lrc);
-    return { lines: Array.isArray(lines) ? lines : [], hasTs: !!hasTs, dynamicLines: null };
-  };
-
-  const mergeDuetLines = (mainLines, subLines) => {
-    // タイムスタンプの許容誤差 (秒)
-    const TIME_TOLERANCE = 0.5;
-
-    const subLinesWithTime = (subLines || []).filter(l => typeof l?.time === 'number');
-    
-    // サブ歌詞のタイムスタンプセットを作成（高速検索用）
-    const subTimeSet = new Set();
-    subLinesWithTime.forEach(sub => {
-      // 許容誤差を考慮して、0.1秒刻みでキーを追加
-      const baseMs = Math.round(sub.time * 10);
-      for (let i = -5; i <= 5; i++) {
-        subTimeSet.add(baseMs + i);
-      }
-    });
-
-    // sub歌詞と時間が被るメイン歌詞を除外する
-    // また、除外されたメイン歌詞のタイムスタンプを記録
-    const excludedMainTimes = new Set();
-    const filteredMain = (mainLines || []).filter(l => {
-      if (typeof l?.time !== 'number') return true;
-      // 時間が近似しているサブ歌詞があるかチェック
-      const keyMs = Math.round(l.time * 10);
-      const collision = subTimeSet.has(keyMs);
-      if (collision) {
-        excludedMainTimes.add(Math.round(l.time * 1000)); // ミリ秒精度で記録
-      }
-      return !collision;
-    });
-    
-    // dynamicLinesからも除外されたメイン行に対応するものを除外
-    // （グローバル変数dynamicLinesを直接変更せず、フィルタ用のセットを保存）
-    _duetExcludedTimes = excludedMainTimes;
-
-    _duetExcludedTimes = excludedMainTimes;
-
-    _duetExcludedTimes = excludedMainTimes;
-
-    _duetExcludedTimes = excludedMainTimes;
-
-    const merged = [];
-    filteredMain.forEach(l => merged.push({ ...l, duetSide: 'left' }));
-    (subLines || []).forEach(l => merged.push({ ...l, duetSide: 'right' }));
-
-    merged.sort((a, b) => {
-      const at = (typeof a.time === 'number') ? a.time : Number.POSITIVE_INFINITY;
-      const bt = (typeof b.time === 'number') ? b.time : Number.POSITIVE_INFINITY;
-      
-      // 時間がほぼ同じ場合は、Left(メイン) -> Right(サブ) の順に並べる
-      if (Math.abs(at - bt) < 0.05) {
-        const ap = a.duetSide === 'right' ? 1 : 0;
-        const bp = b.duetSide === 'right' ? 1 : 0;
-        return ap - bp;
-      }
-      return at - bt;
-    });
-
-    return merged;
-  };
-
-  const mergeDuetLinesWithSimultaneousSupport = (mainLines, subLines) => {
-    const subLinesWithTime = (subLines || []).filter(l => typeof l?.time === 'number');
-    const excludedMainTimes = new Set();
-
-    // Dynamic LRC（1文字同期）がある場合は5秒の許容幅+内容一致で重複判定
-    // 通常LRCはタイムスタンプが精確なので完全一致（SAME_TIMESTAMP_TOLERANCE=0.05s）のみ重複とみなす
-    const hasDynamicLrc = Array.isArray(dynamicLines) && dynamicLines.length > 0;
-    const dedupeTimeTolerance = hasDynamicLrc ? 5.0 : SAME_TIMESTAMP_TOLERANCE;
-
-    const filteredMain = (mainLines || []).filter((mainLine) => {
-      if (typeof mainLine?.time !== 'number') return true;
-
-      const mainText = normalizeLyricCompareTextStrict(mainLine.text);
-      if (!mainText) return true;
-
-      // dedupeTimeTolerance以内のタイムスタンプ差かつ同一テキストのサブ行があれば重複とみなしてメイン行を除外
-      const duplicateSub = subLinesWithTime.find((subLine) => {
-        if (!isSameTimestamp(mainLine.time, subLine.time, dedupeTimeTolerance)) return false;
-        const subText = normalizeLyricCompareTextStrict(subLine.text);
-        return !!subText && scoreLyricTextMatch(mainText, subText) >= 100;
-      });
-      if (duplicateSub) {
-        excludedMainTimes.add(Math.round(mainLine.time * 1000));
-        return false;
-      }
-      return true;
-    });
-
-    const merged = [];
-    filteredMain.forEach(l => merged.push({ ...l, duetSide: 'left' }));
-    (subLines || []).forEach(l => merged.push({ ...l, duetSide: 'right' }));
-
-    merged.sort((a, b) => {
-      const at = (typeof a.time === 'number') ? a.time : Number.POSITIVE_INFINITY;
-      const bt = (typeof b.time === 'number') ? b.time : Number.POSITIVE_INFINITY;
-
-      if (isSameTimestamp(at, bt)) {
-        const ap = a.duetSide === 'right' ? 1 : 0;
-        const bp = b.duetSide === 'right' ? 1 : 0;
-        return ap - bp;
-      }
-      return at - bt;
-    });
-
-    const deduped = [];
-    for (const line of merged) {
-      const duplicateIdx = findCrossSideDuplicateIndex(deduped, line);
-      const prev = duplicateIdx >= 0 ? deduped[duplicateIdx] : null;
-      if (duplicateIdx >= 0) {
-        deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
-        continue;
-      }
-      if (duplicateIdx >= 0) {
-        deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
-        continue;
-      }
-
-      if (duplicateIdx >= 0) {
-        // 同内容の重複だけ落とす。別歌詞の同時進行は残す。
-        if (prev?.duetSide === 'left' && line?.duetSide === 'right') {
-          deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
-        }
-        continue;
-      }
-
-      deduped.push(line);
+    if (prevMs != null) {
+      const chunk = rest.slice(prevEnd);
+      let endMs = nextLineMs;
+      if (typeof endMs !== 'number') endMs = prevMs + 1500;
+      if (endMs <= prevMs) endMs = prevMs + 200;
+      pushDistributed(chars, chunk, prevMs, endMs);
     }
 
-    return deduped;
-  };
+    const textLine = chars.map(c => c.c).join('');
 
-  const collapseCrossSideDuplicateLyrics = (lines) => {
-    if (!Array.isArray(lines) || !lines.length) return Array.isArray(lines) ? lines : [];
-
-    const deduped = [];
-    for (const line of lines) {
-      const duplicateIdx = findCrossSideDuplicateIndex(deduped, line);
-      const prev = duplicateIdx >= 0 ? deduped[duplicateIdx] : null;
-
-      if (duplicateIdx >= 0) {
-        deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
-        continue;
-      }
-
-      deduped.push(line);
-    }
-
-    return deduped;
-  };
-
-  const getDynamicLineForTime = (sec) => {
-    if (!dynamicLines || !Array.isArray(dynamicLines) || !dynamicLines.length) return null;
-    
-    // デュエットモードで除外されたタイムスタンプかチェック
-    const isDuetMode = document.body.classList.contains('ytm-duet-mode');
-    if (isDuetMode && _duetExcludedTimes && _duetExcludedTimes.size > 0) {
-      const secMs = Math.round(sec * 1000);
-      // 許容誤差50ms以内で除外されたタイムスタンプをチェック
-      for (let offset = -50; offset <= 50; offset += 10) {
-        if (_duetExcludedTimes.has(secMs + offset)) {
-          return null; // このタイムスタンプはsub.txtで上書きされているので無視
-        }
-      }
-    }
-
-    // マップキャッシュの再構築（参照が変わった時のみ）
-    if (_dynMapSrc !== dynamicLines) {
-      _dynMapSrc = dynamicLines;
-      _dynMap = new Map();
-
-      dynamicLines.forEach(dl => {
-        let ms = null;
-        if (typeof dl?.startTimeMs === 'number') {
-          ms = dl.startTimeMs;
-        } else if (typeof dl?.startTimeMs === 'string') {
-          const n = Number(dl.startTimeMs);
-          if (!Number.isNaN(n)) ms = n;
-        } else if (Array.isArray(dl?.chars) && dl.chars.length) {
-          const ts = dl.chars.map(c => (typeof c?.t === 'number' ? c.t : null)).filter(v => v != null);
-          if (ts.length) ms = Math.min(...ts);
-        }
-
-        if (typeof ms === 'number') {
-          _dynMap.set(timeKey(ms / 1000), dl);
-        }
-      });
-    }
-
-    // 1. 完全一致トライ
-    const exact = _dynMap?.get(timeKey(sec));
-    if (exact) return exact;
-
-    // 2. 近似値トライ (前後0.15秒)
-    const TOLERANCE = 0.15;
-    const found = dynamicLines.find(dl => {
-       let startS = 0;
-       if (typeof dl.startTimeMs === 'number') startS = dl.startTimeMs / 1000;
-       else if (dl.time) startS = dl.time;
-       return Math.abs(startS - sec) <= TOLERANCE;
+    out.push({
+      startTimeMs: (typeof lineMs === 'number' ? lineMs : (chars.length ? chars[0].t : 0)),
+      text: textLine,
+      chars,
     });
-
-    return found || null;
-  };
-
-  // サブボーカル用のdynamicLine取得（sub.txtのDynamic.lrc対応）
-  let _subDynMapSrc = null;
-  let _subDynMap = null;
-  
-  const getSubDynamicLineForTime = (sec) => {
-    if (!duetSubDynamicLines || !Array.isArray(duetSubDynamicLines) || !duetSubDynamicLines.length) return null;
-    
-    // マップキャッシュの再構築（参照が変わった時のみ）
-    if (_subDynMapSrc !== duetSubDynamicLines) {
-      _subDynMapSrc = duetSubDynamicLines;
-      _subDynMap = new Map();
-
-      duetSubDynamicLines.forEach(dl => {
-        let ms = null;
-        if (typeof dl?.startTimeMs === 'number') {
-          ms = dl.startTimeMs;
-        } else if (typeof dl?.startTimeMs === 'string') {
-          const n = Number(dl.startTimeMs);
-          if (!Number.isNaN(n)) ms = n;
-        } else if (Array.isArray(dl?.chars) && dl.chars.length) {
-          const ts = dl.chars.map(c => (typeof c?.t === 'number' ? c.t : null)).filter(v => v != null);
-          if (ts.length) ms = Math.min(...ts);
-        }
-
-        if (typeof ms === 'number') {
-          _subDynMap.set(timeKey(ms / 1000), dl);
-        }
-      });
-    }
-
-    // 1. 完全一致トライ
-    const exact = _subDynMap?.get(timeKey(sec));
-    if (exact) return exact;
-
-    // 2. 近似値トライ (前後0.15秒)
-    const TOLERANCE = 0.15;
-    const found = duetSubDynamicLines.find(dl => {
-       let startS = 0;
-       if (typeof dl.startTimeMs === 'number') startS = dl.startTimeMs / 1000;
-       else if (dl.time) startS = dl.time;
-       return Math.abs(startS - sec) <= TOLERANCE;
-    });
-
-    return found || null;
-  };
-
-  let animatedCaptionData = null;
-  let animatedCaptionFrameKey = '';
-
-  const isTimedTextXml = (text) => (
-    typeof text === 'string' &&
-    /<timedtext\b/i.test(text) &&
-    /<body\b/i.test(text) &&
-    /<p\b/i.test(text)
-  );
-
-  const timedTextNumberAttr = (el, name, fallback = null) => {
-    const raw = el ? el.getAttribute(name) : null;
-    if (raw === null || raw === '') return fallback;
-    const value = Number(raw);
-    return Number.isFinite(value) ? value : fallback;
-  };
-
-  const normalizeTimedTextCaption = (text) => (
-    String(text || '')
-      .replace(/\u200B/g, '')
-      .replace(/\uFEFF/g, '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .replace(/[ \t]+\n/g, '\n')
-      .replace(/\n[ \t]+/g, '\n')
-      .trim()
-  );
-
-  const parseTimedTextStyleMap = (root, tagName) => {
-    const out = new Map();
-    root.querySelectorAll(tagName).forEach((el) => {
-      const id = el.getAttribute('id');
-      if (!id) return;
-      const attrs = {};
-      Array.from(el.attributes || []).forEach(attr => {
-        attrs[attr.name] = attr.value;
-      });
-      out.set(String(id), attrs);
-    });
-    return out;
-  };
-
-  const extractTimedTextSegments = (node, inheritedPenId = '') => {
-    const segments = [];
-    const walk = (current, penId) => {
-      Array.from(current.childNodes || []).forEach((child) => {
-        if (child.nodeType === Node.TEXT_NODE) {
-          const text = String(child.nodeValue || '').replace(/\u200B/g, '').replace(/\uFEFF/g, '');
-          if (text.trim()) segments.push({ text, penId });
-          return;
-        }
-        if (child.nodeType !== Node.ELEMENT_NODE) return;
-        const nextPenId = child.getAttribute('p') || penId;
-        walk(child, nextPenId);
-      });
-    };
-    walk(node, inheritedPenId);
-    return segments;
-  };
-
-  const buildTimedTextPlainLines = (events) => {
-    const lines = [];
-    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-
-    events.forEach((event) => {
-      const text = normalizeTimedTextCaption(event.text);
-      const norm = normalize(text);
-      if (!norm) return;
-
-      const last = lines[lines.length - 1];
-      if (last && event.time <= (last.endTime || last.time) + 0.35) {
-        const lastNorm = normalize(last.text);
-        if (norm === lastNorm) return;
-        if (norm.includes(lastNorm) || lastNorm.includes(norm)) {
-          if (norm.length >= lastNorm.length) {
-            last.time = event.time;
-            last.endTime = event.endTime;
-            last.text = text;
-          }
-          return;
-        }
-      }
-
-      lines.push({
-        time: event.time,
-        endTime: event.endTime,
-        text,
-      });
-    });
-
-    return lines.map(({ time, text }) => ({ time, text }));
-  };
-
-  const parseTimedTextAnimation = (xmlText) => {
-    if (!isTimedTextXml(xmlText) || typeof DOMParser === 'undefined') return null;
-    try {
-      const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-      if (doc.querySelector('parsererror')) return null;
-      const root = doc.querySelector('timedtext');
-      if (!root) return null;
-
-      const pens = parseTimedTextStyleMap(root, 'pen');
-      const windows = parseTimedTextStyleMap(root, 'wp');
-      const windowStyles = parseTimedTextStyleMap(root, 'ws');
-      const events = [];
-
-      root.querySelectorAll('body > p').forEach((p, index) => {
-        const startMs = timedTextNumberAttr(p, 't', null);
-        const durationMs = timedTextNumberAttr(p, 'd', 0);
-        if (startMs === null) return;
-
-        const penId = p.getAttribute('p') || '';
-        const wpId = p.getAttribute('wp') || '';
-        const wsId = p.getAttribute('ws') || '';
-        const segments = extractTimedTextSegments(p, penId);
-        const text = normalizeTimedTextCaption(segments.map(s => s.text).join(''));
-        if (!text) return;
-
-        events.push({
-          id: index,
-          time: startMs / 1000,
-          endTime: (startMs + Math.max(60, durationMs || 0)) / 1000,
-          startMs,
-          endMs: startMs + Math.max(60, durationMs || 0),
-          durationMs,
-          text,
-          segments: segments.length ? segments : [{ text, penId }],
-          penId,
-          wpId,
-          wsId,
-          pen: pens.get(String(penId)) || {},
-          window: windows.get(String(wpId)) || {},
-          windowStyle: windowStyles.get(String(wsId)) || {},
-        });
-      });
-
-      if (!events.length) return null;
-      events.sort((a, b) => a.startMs - b.startMs || a.id - b.id);
-      return {
-        pens,
-        windows,
-        windowStyles,
-        events,
-        plainLines: buildTimedTextPlainLines(events),
-      };
-    } catch (e) {
-      console.warn('TimedText parse failed', e);
-      return null;
-    }
-  };
-
-  const getTimedTextAnchorTransform = (anchorPoint) => {
-    const ap = Number(anchorPoint);
-    const map = {
-      0: 'translate(0, 0)',
-      1: 'translate(-50%, 0)',
-      2: 'translate(-100%, 0)',
-      3: 'translate(0, -50%)',
-      4: 'translate(-50%, -50%)',
-      5: 'translate(-100%, -50%)',
-      6: 'translate(0, -100%)',
-      7: 'translate(-50%, -100%)',
-      8: 'translate(-100%, -100%)',
-    };
-    return map[ap] || 'translate(-50%, -50%)';
-  };
-
-  const getTimedTextAlign = (windowStyle) => {
-    const ju = Number(windowStyle?.ju);
-    if (ju === 0) return 'left';
-    if (ju === 2) return 'right';
-    return 'center';
-  };
-
-  const getTimedTextCueStyle = (event) => {
-    const pen = event.pen || {};
-    const win = event.window || {};
-    const left = timedTextNumberAttr({ getAttribute: n => win[n] }, 'ah', 50);
-    const top = timedTextNumberAttr({ getAttribute: n => win[n] }, 'av', 80);
-    const size = Number(pen.sz || 140);
-    const fontSize = Math.max(15, Math.min(76, size * 0.24));
-    const opacity = pen.fo !== undefined ? Math.max(0, Math.min(1, Number(pen.fo) / 254)) : 1;
-    const color = /^#[0-9a-f]{6}$/i.test(pen.fc || '') ? pen.fc : '#FEFEFE';
-    const edgeColor = /^#[0-9a-f]{6}$/i.test(pen.ec || '') ? pen.ec : '#000000';
-    const textShadow = pen.ec
-      ? `0 0 2px ${edgeColor}, 0 2px 8px rgba(0,0,0,.72)`
-      : '0 2px 10px rgba(0,0,0,.72)';
-
-    return [
-      `left:${left}%`,
-      `top:${top}%`,
-      `transform:${getTimedTextAnchorTransform(win.ap)}`,
-      `font-size:${fontSize}px`,
-      `color:${color}`,
-      `opacity:${opacity}`,
-      `text-shadow:${textShadow}`,
-      `text-align:${getTimedTextAlign(event.windowStyle)}`,
-      pen.i === '1' ? 'font-style:italic' : '',
-    ].filter(Boolean).join(';');
-  };
-
-  const getTimedTextSegmentHtml = (event) => (
-    (event.segments || [{ text: event.text, penId: event.penId }]).map(segment => {
-      const pen = animatedCaptionData?.pens?.get(String(segment.penId || event.penId)) || event.pen || {};
-      const color = /^#[0-9a-f]{6}$/i.test(pen.fc || '') ? pen.fc : '';
-      const opacity = pen.fo !== undefined ? Math.max(0, Math.min(1, Number(pen.fo) / 254)) : null;
-      const size = Number(pen.sz || 0);
-      const style = [
-        color ? `color:${color}` : '',
-        opacity !== null ? `opacity:${opacity}` : '',
-        size ? `font-size:${Math.max(15, Math.min(76, size * 0.24))}px` : '',
-        pen.i === '1' ? 'font-style:italic' : '',
-      ].filter(Boolean).join(';');
-      return `<span${style ? ` style="${style}"` : ''}>${escapeHtml(segment.text)}</span>`;
-    }).join('')
-  );
-
-  function renderAnimatedTimedText(captionData) {
-    if (!ui.lyrics || !captionData) return;
-    animatedCaptionData = captionData;
-    animatedCaptionFrameKey = '';
-    hasTimestamp = true;
-    document.body.classList.remove('ytm-no-lyrics', 'ytm-no-timestamp');
-    document.body.classList.add('ytm-has-timestamp', 'ytm-animated-caption-mode');
-    ui.lyrics.innerHTML = '<div class="ytm-animated-caption-stage" aria-live="off"></div>';
-    const now = getCurrentPlaybackTimeSec();
-    updateAnimatedCaptionStage(typeof now === 'number' ? now : 0, true);
   }
 
-  function updateAnimatedCaptionStage(currentTime, force = false) {
-    if (!animatedCaptionData || !ui.lyrics) return;
-    const stage = ui.lyrics.querySelector('.ytm-animated-caption-stage');
-    if (!stage) return;
-    const tMs = Math.max(0, currentTime * 1000);
-    const active = animatedCaptionData.events
-      .filter(event => tMs + 40 >= event.startMs && tMs <= event.endMs + 40)
-      .slice(-24);
-    const key = active.map(event => `${event.id}:${event.startMs}:${event.endMs}`).join('|');
-    if (!force && key === animatedCaptionFrameKey) return;
-    animatedCaptionFrameKey = key;
-    stage.innerHTML = active.map(event => (
-      `<div class="ytm-animated-caption-cue" style="${getTimedTextCueStyle(event)}">${getTimedTextSegmentHtml(event)}</div>`
-    )).join('');
+  return out;
+};
+
+// Dynamic.lrc形式かどうかを判定
+const isDynamicLrcFormat = (text) => {
+  if (!text) return false;
+  // <00:00.00>形式のタグが含まれていればDynamic.lrc形式
+  return /<\d+:\d{2}(?:\.\d{1,3})?>/.test(text);
+};
+
+const parseSubLRC = (lrc) => {
+  // Dynamic.lrc形式の場合は専用パーサーを使用
+  if (isDynamicLrcFormat(lrc)) {
+    const dynLines = parseDynamicLrcForSub(lrc);
+    if (dynLines && dynLines.length) {
+      // dynamicLinesからLRC形式のlinesに変換
+      const lines = dynLines.map(dl => ({
+        time: (typeof dl.startTimeMs === 'number') ? dl.startTimeMs / 1000 : null,
+        text: dl.text || '',
+      }));
+      // サブ用のdynamicLinesを保存
+      duetSubDynamicLines = dynLines;
+      return { lines, hasTs: true, dynamicLines: dynLines };
+    }
   }
 
-  function setupMovieMode() {
-    const resizeObserver = new ResizeObserver(() => {
-      window.dispatchEvent(new Event('resize'));
-    });
-    const targetWrapper = document.getElementById("ytm-custom-wrapper");
-    if (targetWrapper) {
-      resizeObserver.observe(targetWrapper);
-    } else {
-      resizeObserver.observe(document.body);
-    }
-    
-    const check = () => {
-      const video = document.querySelector("ytmusic-player#player.style-scope.ytmusic-player-page");
-      const target = document.querySelector("#ytm-custom-wrapper");
-      const switcher = document.querySelector("ytmusic-av-toggle");
-      const switcherTarget = document.querySelector("#ytm-custom-info-area");
+  // 通常のLRC形式
+  duetSubDynamicLines = null;
+  const { lines, hasTs } = parseLRCInternal(lrc);
+  return { lines: Array.isArray(lines) ? lines : [], hasTs: !!hasTs, dynamicLines: null };
+};
 
-      if (!video || !target || !switcher || !switcherTarget) {
-        setTimeout(check, 300);
+const mergeDuetLines = (mainLines, subLines) => {
+  // タイムスタンプの許容誤差 (秒)
+  const TIME_TOLERANCE = 0.5;
+
+  const subLinesWithTime = (subLines || []).filter(l => typeof l?.time === 'number');
+
+  // サブ歌詞のタイムスタンプセットを作成（高速検索用）
+  const subTimeSet = new Set();
+  subLinesWithTime.forEach(sub => {
+    // 許容誤差を考慮して、0.1秒刻みでキーを追加
+    const baseMs = Math.round(sub.time * 10);
+    for (let i = -5; i <= 5; i++) {
+      subTimeSet.add(baseMs + i);
+    }
+  });
+
+  // sub歌詞と時間が被るメイン歌詞を除外する
+  // また、除外されたメイン歌詞のタイムスタンプを記録
+  const excludedMainTimes = new Set();
+  const filteredMain = (mainLines || []).filter(l => {
+    if (typeof l?.time !== 'number') return true;
+    // 時間が近似しているサブ歌詞があるかチェック
+    const keyMs = Math.round(l.time * 10);
+    const collision = subTimeSet.has(keyMs);
+    if (collision) {
+      excludedMainTimes.add(Math.round(l.time * 1000)); // ミリ秒精度で記録
+    }
+    return !collision;
+  });
+
+  // dynamicLinesからも除外されたメイン行に対応するものを除外
+  // （グローバル変数dynamicLinesを直接変更せず、フィルタ用のセットを保存）
+  _duetExcludedTimes = excludedMainTimes;
+
+  _duetExcludedTimes = excludedMainTimes;
+
+  _duetExcludedTimes = excludedMainTimes;
+
+  _duetExcludedTimes = excludedMainTimes;
+
+  const merged = [];
+  filteredMain.forEach(l => merged.push({ ...l, duetSide: 'left' }));
+  (subLines || []).forEach(l => merged.push({ ...l, duetSide: 'right' }));
+
+  merged.sort((a, b) => {
+    const at = (typeof a.time === 'number') ? a.time : Number.POSITIVE_INFINITY;
+    const bt = (typeof b.time === 'number') ? b.time : Number.POSITIVE_INFINITY;
+
+    // 時間がほぼ同じ場合は、Left(メイン) -> Right(サブ) の順に並べる
+    if (Math.abs(at - bt) < 0.05) {
+      const ap = a.duetSide === 'right' ? 1 : 0;
+      const bp = b.duetSide === 'right' ? 1 : 0;
+      return ap - bp;
+    }
+    return at - bt;
+  });
+
+  return merged;
+};
+
+const mergeDuetLinesWithSimultaneousSupport = (mainLines, subLines) => {
+  const subLinesWithTime = (subLines || []).filter(l => typeof l?.time === 'number');
+  const excludedMainTimes = new Set();
+
+  // Dynamic LRC（1文字同期）がある場合は5秒の許容幅+内容一致で重複判定
+  // 通常LRCはタイムスタンプが精確なので完全一致（SAME_TIMESTAMP_TOLERANCE=0.05s）のみ重複とみなす
+  const hasDynamicLrc = Array.isArray(dynamicLines) && dynamicLines.length > 0;
+  const dedupeTimeTolerance = hasDynamicLrc ? 5.0 : SAME_TIMESTAMP_TOLERANCE;
+
+  const filteredMain = (mainLines || []).filter((mainLine) => {
+    if (typeof mainLine?.time !== 'number') return true;
+
+    const mainText = normalizeLyricCompareTextStrict(mainLine.text);
+    if (!mainText) return true;
+
+    // dedupeTimeTolerance以内のタイムスタンプ差かつ同一テキストのサブ行があれば重複とみなしてメイン行を除外
+    const duplicateSub = subLinesWithTime.find((subLine) => {
+      if (!isSameTimestamp(mainLine.time, subLine.time, dedupeTimeTolerance)) return false;
+      const subText = normalizeLyricCompareTextStrict(subLine.text);
+      return !!subText && scoreLyricTextMatch(mainText, subText) >= 100;
+    });
+    if (duplicateSub) {
+      excludedMainTimes.add(Math.round(mainLine.time * 1000));
+      return false;
+    }
+    return true;
+  });
+
+  const merged = [];
+  filteredMain.forEach(l => merged.push({ ...l, duetSide: 'left' }));
+  (subLines || []).forEach(l => merged.push({ ...l, duetSide: 'right' }));
+
+  merged.sort((a, b) => {
+    const at = (typeof a.time === 'number') ? a.time : Number.POSITIVE_INFINITY;
+    const bt = (typeof b.time === 'number') ? b.time : Number.POSITIVE_INFINITY;
+
+    if (isSameTimestamp(at, bt)) {
+      const ap = a.duetSide === 'right' ? 1 : 0;
+      const bp = b.duetSide === 'right' ? 1 : 0;
+      return ap - bp;
+    }
+    return at - bt;
+  });
+
+  const deduped = [];
+  for (const line of merged) {
+    const duplicateIdx = findCrossSideDuplicateIndex(deduped, line);
+    const prev = duplicateIdx >= 0 ? deduped[duplicateIdx] : null;
+    if (duplicateIdx >= 0) {
+      deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+      continue;
+    }
+    if (duplicateIdx >= 0) {
+      deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+      continue;
+    }
+
+    if (duplicateIdx >= 0) {
+      // 同内容の重複だけ落とす。別歌詞の同時進行は残す。
+      if (prev?.duetSide === 'left' && line?.duetSide === 'right') {
+        deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+      }
+      continue;
+    }
+
+    deduped.push(line);
+  }
+
+  return deduped;
+};
+
+const collapseCrossSideDuplicateLyrics = (lines) => {
+  if (!Array.isArray(lines) || !lines.length) return Array.isArray(lines) ? lines : [];
+
+  const deduped = [];
+  for (const line of lines) {
+    const duplicateIdx = findCrossSideDuplicateIndex(deduped, line);
+    const prev = duplicateIdx >= 0 ? deduped[duplicateIdx] : null;
+
+    if (duplicateIdx >= 0) {
+      deduped[duplicateIdx] = preferDuplicateMainLine(prev, line);
+      continue;
+    }
+
+    deduped.push(line);
+  }
+
+  return deduped;
+};
+
+const getDynamicLineForTime = (sec) => {
+  if (!dynamicLines || !Array.isArray(dynamicLines) || !dynamicLines.length) return null;
+
+  // デュエットモードで除外されたタイムスタンプかチェック
+  const isDuetMode = document.body.classList.contains('ytm-duet-mode');
+  if (isDuetMode && _duetExcludedTimes && _duetExcludedTimes.size > 0) {
+    const secMs = Math.round(sec * 1000);
+    // 許容誤差50ms以内で除外されたタイムスタンプをチェック
+    for (let offset = -50; offset <= 50; offset += 10) {
+      if (_duetExcludedTimes.has(secMs + offset)) {
+        return null; // このタイムスタンプはsub.txtで上書きされているので無視
+      }
+    }
+  }
+
+  // マップキャッシュの再構築（参照が変わった時のみ）
+  if (_dynMapSrc !== dynamicLines) {
+    _dynMapSrc = dynamicLines;
+    _dynMap = new Map();
+
+    dynamicLines.forEach(dl => {
+      let ms = null;
+      if (typeof dl?.startTimeMs === 'number') {
+        ms = dl.startTimeMs;
+      } else if (typeof dl?.startTimeMs === 'string') {
+        const n = Number(dl.startTimeMs);
+        if (!Number.isNaN(n)) ms = n;
+      } else if (Array.isArray(dl?.chars) && dl.chars.length) {
+        const ts = dl.chars.map(c => (typeof c?.t === 'number' ? c.t : null)).filter(v => v != null);
+        if (ts.length) ms = Math.min(...ts);
+      }
+
+      if (typeof ms === 'number') {
+        _dynMap.set(timeKey(ms / 1000), dl);
+      }
+    });
+  }
+
+  // 1. 完全一致トライ
+  const exact = _dynMap?.get(timeKey(sec));
+  if (exact) return exact;
+
+  // 2. 近似値トライ (前後0.15秒)
+  const TOLERANCE = 0.15;
+  const found = dynamicLines.find(dl => {
+    let startS = 0;
+    if (typeof dl.startTimeMs === 'number') startS = dl.startTimeMs / 1000;
+    else if (dl.time) startS = dl.time;
+    return Math.abs(startS - sec) <= TOLERANCE;
+  });
+
+  return found || null;
+};
+
+// サブボーカル用のdynamicLine取得（sub.txtのDynamic.lrc対応）
+let _subDynMapSrc = null;
+let _subDynMap = null;
+
+const getSubDynamicLineForTime = (sec) => {
+  if (!duetSubDynamicLines || !Array.isArray(duetSubDynamicLines) || !duetSubDynamicLines.length) return null;
+
+  // マップキャッシュの再構築（参照が変わった時のみ）
+  if (_subDynMapSrc !== duetSubDynamicLines) {
+    _subDynMapSrc = duetSubDynamicLines;
+    _subDynMap = new Map();
+
+    duetSubDynamicLines.forEach(dl => {
+      let ms = null;
+      if (typeof dl?.startTimeMs === 'number') {
+        ms = dl.startTimeMs;
+      } else if (typeof dl?.startTimeMs === 'string') {
+        const n = Number(dl.startTimeMs);
+        if (!Number.isNaN(n)) ms = n;
+      } else if (Array.isArray(dl?.chars) && dl.chars.length) {
+        const ts = dl.chars.map(c => (typeof c?.t === 'number' ? c.t : null)).filter(v => v != null);
+        if (ts.length) ms = Math.min(...ts);
+      }
+
+      if (typeof ms === 'number') {
+        _subDynMap.set(timeKey(ms / 1000), dl);
+      }
+    });
+  }
+
+  // 1. 完全一致トライ
+  const exact = _subDynMap?.get(timeKey(sec));
+  if (exact) return exact;
+
+  // 2. 近似値トライ (前後0.15秒)
+  const TOLERANCE = 0.15;
+  const found = duetSubDynamicLines.find(dl => {
+    let startS = 0;
+    if (typeof dl.startTimeMs === 'number') startS = dl.startTimeMs / 1000;
+    else if (dl.time) startS = dl.time;
+    return Math.abs(startS - sec) <= TOLERANCE;
+  });
+
+  return found || null;
+};
+
+let animatedCaptionData = null;
+let animatedCaptionFrameKey = '';
+
+const isTimedTextXml = (text) => (
+  typeof text === 'string' &&
+  /<timedtext\b/i.test(text) &&
+  /<body\b/i.test(text) &&
+  /<p\b/i.test(text)
+);
+
+const timedTextNumberAttr = (el, name, fallback = null) => {
+  const raw = el ? el.getAttribute(name) : null;
+  if (raw === null || raw === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+};
+
+const normalizeTimedTextCaption = (text) => (
+  String(text || '')
+    .replace(/\u200B/g, '')
+    .replace(/\uFEFF/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .trim()
+);
+
+const parseTimedTextStyleMap = (root, tagName) => {
+  const out = new Map();
+  root.querySelectorAll(tagName).forEach((el) => {
+    const id = el.getAttribute('id');
+    if (!id) return;
+    const attrs = {};
+    Array.from(el.attributes || []).forEach(attr => {
+      attrs[attr.name] = attr.value;
+    });
+    out.set(String(id), attrs);
+  });
+  return out;
+};
+
+const extractTimedTextSegments = (node, inheritedPenId = '') => {
+  const segments = [];
+  const walk = (current, penId) => {
+    Array.from(current.childNodes || []).forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = String(child.nodeValue || '').replace(/\u200B/g, '').replace(/\uFEFF/g, '');
+        if (text.trim()) segments.push({ text, penId });
         return;
       }
-
-      movieObserver = observerMovieModeSetup();
-    };
-    check();
+      if (child.nodeType !== Node.ELEMENT_NODE) return;
+      const nextPenId = child.getAttribute('p') || penId;
+      walk(child, nextPenId);
+    });
   };
-  function bringSwitcherOnly(){
-    const switcher = document.querySelector("ytmusic-av-toggle");
-    const customSwitcherParent = document.querySelector("#ytm-custom-info-area");
-    customSwitcherParent.appendChild(switcher);
-  }
-  function changeIModeUIWithMovieMode(mode) {
-    if (!mode) {
-      moviemode = null;
-      if (movieObserver) movieObserver.stop();
-      movieObserver = null;
-      const switcher = document.querySelector("ytmusic-av-toggle");
-      const video = document.querySelector("ytmusic-player#player");
-      const originParent = document.querySelector("div#main-panel");
-      const originSwitcherTarget = originParent.children[1];
-      const originTarget = originParent.children[2];
-      if (!originParent.contains(video)) {
-        originParent.insertBefore(video, originTarget);
-      }
-      if (!originParent.contains(switcher)) {
-        originSwitcherTarget.appendChild(switcher);
-      }
-      setTimeout(() => {
-        window.dispatchEvent(new Event('resize'));
-      }, 300);
-    }
-    else {
-      if (movieObserver) movieObserver.stop();
-      movieObserver = null;
-      movieObserver = observerMovieModeSetup();
-    }
-  }
-  const observerMovieModeSetup = () => {
-    const switcher = document.querySelector("ytmusic-av-toggle");
-    if (!switcher) return null;
+  walk(node, inheritedPenId);
+  return segments;
+};
 
-    if (movieObserver) {
-      movieObserver.stop();
-      movieObserver = null;
-    }
+const buildTimedTextPlainLines = (events) => {
+  const lines = [];
+  const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
-    let changed;
-    let classTargets = [];
+  events.forEach((event) => {
+    const text = normalizeTimedTextCaption(event.text);
+    const norm = normalize(text);
+    if (!norm) return;
 
-    const handleMutation = () => {
-      const mode = switcher.getAttribute("playback-mode");
-      const newMoviemode = (mode === "OMV_PREFERRED") ? true : false;
-
-      if (moviemode !== newMoviemode) {
-        changed = true;
-      } else {
-        changed = false;
-      }
-
-      moviemode = newMoviemode;
-
-      classTargets = [];
-      const wrapper = document.querySelector("#ytm-custom-wrapper");
-      if (wrapper instanceof Element) {
-        classTargets.push(...wrapper.querySelectorAll("*"));
-      }
-      const pusher = (element) => {
-        if (element instanceof Element) classTargets.push(element);
-      };
-      const playerBar = document.querySelector("ytmusic-player-bar");
-      pusher(playerBar);
-      pusher(switcher);
-      const video = document.querySelector("ytmusic-player#player");
-      pusher(video);
-      const navBar = document.querySelector("ytmusic-nav-bar");
-      pusher(navBar);
-
-      classTargets.forEach(element => {
-        if (moviemode) {
-          element.classList.add("moviemode");
-        } else {
-          element.classList.remove("moviemode");
+    const last = lines[lines.length - 1];
+    if (last && event.time <= (last.endTime || last.time) + 0.35) {
+      const lastNorm = normalize(last.text);
+      if (norm === lastNorm) return;
+      if (norm.includes(lastNorm) || lastNorm.includes(norm)) {
+        if (norm.length >= lastNorm.length) {
+          last.time = event.time;
+          last.endTime = event.endTime;
+          last.text = text;
         }
-      });
+        return;
+      }
+    }
 
-      changeUIWithMovieMode(changed);
-    };
+    lines.push({
+      time: event.time,
+      endTime: event.endTime,
+      text,
+    });
+  });
 
-    handleMutation();
-    bringSwitcherOnly();
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === "attributes" && mutation.attributeName === "playback-mode") {
-          handleMutation();
-        }
+  return lines.map(({ time, text }) => ({ time, text }));
+};
+
+const parseTimedTextAnimation = (xmlText) => {
+  if (!isTimedTextXml(xmlText) || typeof DOMParser === 'undefined') return null;
+  try {
+    const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+    if (doc.querySelector('parsererror')) return null;
+    const root = doc.querySelector('timedtext');
+    if (!root) return null;
+
+    const pens = parseTimedTextStyleMap(root, 'pen');
+    const windows = parseTimedTextStyleMap(root, 'wp');
+    const windowStyles = parseTimedTextStyleMap(root, 'ws');
+    const events = [];
+
+    root.querySelectorAll('body > p').forEach((p, index) => {
+      const startMs = timedTextNumberAttr(p, 't', null);
+      const durationMs = timedTextNumberAttr(p, 'd', 0);
+      if (startMs === null) return;
+
+      const penId = p.getAttribute('p') || '';
+      const wpId = p.getAttribute('wp') || '';
+      const wsId = p.getAttribute('ws') || '';
+      const segments = extractTimedTextSegments(p, penId);
+      const text = normalizeTimedTextCaption(segments.map(s => s.text).join(''));
+      if (!text) return;
+
+      events.push({
+        id: index,
+        time: startMs / 1000,
+        endTime: (startMs + Math.max(60, durationMs || 0)) / 1000,
+        startMs,
+        endMs: startMs + Math.max(60, durationMs || 0),
+        durationMs,
+        text,
+        segments: segments.length ? segments : [{ text, penId }],
+        penId,
+        wpId,
+        wsId,
+        pen: pens.get(String(penId)) || {},
+        window: windows.get(String(wpId)) || {},
+        windowStyle: windowStyles.get(String(wsId)) || {},
       });
     });
 
-    observer.observe(switcher, { attributes: true });
-
-    movieObserver = {
-      stop: () => {
-        observer.disconnect();
-        movieObserver = null;
-      }
+    if (!events.length) return null;
+    events.sort((a, b) => a.startMs - b.startMs || a.id - b.id);
+    return {
+      pens,
+      windows,
+      windowStyles,
+      events,
+      plainLines: buildTimedTextPlainLines(events),
     };
+  } catch (e) {
+    console.warn('TimedText parse failed', e);
+    return null;
+  }
+};
 
-    return movieObserver;
+const getTimedTextAnchorTransform = (anchorPoint) => {
+  const ap = Number(anchorPoint);
+  const map = {
+    0: 'translate(0, 0)',
+    1: 'translate(-50%, 0)',
+    2: 'translate(-100%, 0)',
+    3: 'translate(0, -50%)',
+    4: 'translate(-50%, -50%)',
+    5: 'translate(-100%, -50%)',
+    6: 'translate(0, -100%)',
+    7: 'translate(-50%, -100%)',
+    8: 'translate(-100%, -100%)',
   };
-  function changeUIWithMovieMode(changed) {
-    if (!changed || changed === null) return;
-    const originParent = document.querySelector("div#main-panel");
-    const originTarget = originParent.children[2];
-    const customParent = document.querySelector("#ytm-custom-wrapper");
-    const customSwitcherParent = document.querySelector("#ytm-custom-info-area");
-    const switcher = document.querySelector("ytmusic-av-toggle");
-    const video = document.querySelector("ytmusic-player#player.style-scope.ytmusic-player-page");
+  return map[ap] || 'translate(-50%, -50%)';
+};
 
-    if (moviemode) {
-      customParent.prepend(video);
-      customSwitcherParent.appendChild(switcher);
+const getTimedTextAlign = (windowStyle) => {
+  const ju = Number(windowStyle?.ju);
+  if (ju === 0) return 'left';
+  if (ju === 2) return 'right';
+  return 'center';
+};
+
+const getTimedTextScaledFontSize = (rawSize, fallback = 140) => {
+  const numeric = Number(rawSize);
+  const sourceSize = Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+  return Math.max(20, Math.min(98, sourceSize * 0.30));
+};
+
+const getAnimatedCaptionFontScale = () => {
+  const fallback = 3.4;
+  try {
+    if (!ui?.lyrics || typeof getComputedStyle !== 'function') return fallback;
+    const raw = getComputedStyle(ui.lyrics).getPropertyValue('--ytm-animated-font-scale');
+    const value = Number(String(raw || '').trim());
+    if (!Number.isFinite(value) || value <= 0) return fallback;
+    return value;
+  } catch {
+    return fallback;
+  }
+};
+
+const getTimedTextCueStyle = (event) => {
+  const pen = event.pen || {};
+  const win = event.window || {};
+  const left = timedTextNumberAttr({ getAttribute: n => win[n] }, 'ah', 50);
+  const top = timedTextNumberAttr({ getAttribute: n => win[n] }, 'av', 80);
+  const scale = getAnimatedCaptionFontScale();
+  const baseFontSize = getTimedTextScaledFontSize(pen.sz, 140);
+  const fontSize = baseFontSize * scale;
+  const opacity = pen.fo !== undefined ? Math.max(0, Math.min(1, Number(pen.fo) / 254)) : 1;
+  const color = /^#[0-9a-f]{6}$/i.test(pen.fc || '') ? pen.fc : '#FEFEFE';
+  const edgeColor = /^#[0-9a-f]{6}$/i.test(pen.ec || '') ? pen.ec : '#000000';
+  const textShadow = pen.ec
+    ? `0 0 2px ${edgeColor}, 0 2px 8px rgba(0,0,0,.72)`
+    : '0 2px 10px rgba(0,0,0,.72)';
+
+  return [
+    `left:${left}%`,
+    `top:${top}%`,
+    `transform:${getTimedTextAnchorTransform(win.ap)}`,
+    `--ytm-animated-base-font-size:${baseFontSize}px`,
+    `font-size:${fontSize}px`,
+    `color:${color}`,
+    `opacity:${opacity}`,
+    `text-shadow:${textShadow}`,
+    `text-align:${getTimedTextAlign(event.windowStyle)}`,
+    pen.i === '1' ? 'font-style:italic' : '',
+  ].filter(Boolean).join(';');
+};
+
+const getTimedTextSegmentHtml = (event) => (
+  ((segments, scale) => segments.map(segment => {
+    const pen = animatedCaptionData?.pens?.get(String(segment.penId || event.penId)) || event.pen || {};
+    const color = /^#[0-9a-f]{6}$/i.test(pen.fc || '') ? pen.fc : '';
+    const opacity = pen.fo !== undefined ? Math.max(0, Math.min(1, Number(pen.fo) / 254)) : null;
+    const size = Number(pen.sz || 0);
+    const style = [
+      color ? `color:${color}` : '',
+      opacity !== null ? `opacity:${opacity}` : '',
+      size ? `font-size:${(getTimedTextScaledFontSize(size, size) * scale).toFixed(2)}px` : '',
+      pen.i === '1' ? 'font-style:italic' : '',
+    ].filter(Boolean).join(';');
+    return `<span${style ? ` style="${style}"` : ''}>${escapeHtml(segment.text)}</span>`;
+  }).join(''))(event.segments || [{ text: event.text, penId: event.penId }], getAnimatedCaptionFontScale())
+);
+
+function renderAnimatedTimedText(captionData) {
+  if (!ui.lyrics || !captionData) return;
+  animatedCaptionData = captionData;
+  animatedCaptionFrameKey = '';
+  hasTimestamp = true;
+  document.body.classList.remove('ytm-no-lyrics', 'ytm-no-timestamp');
+  document.body.classList.add('ytm-has-timestamp', 'ytm-animated-caption-mode');
+  ui.lyrics.innerHTML = '<div class="ytm-animated-caption-stage" aria-live="off"></div>';
+  const now = getCurrentPlaybackTimeSec();
+  updateAnimatedCaptionStage(typeof now === 'number' ? now : 0, true);
+}
+
+function updateAnimatedCaptionStage(currentTime, force = false) {
+  if (!animatedCaptionData || !ui.lyrics) return;
+  const stage = ui.lyrics.querySelector('.ytm-animated-caption-stage');
+  if (!stage) return;
+  const tMs = Math.max(0, currentTime * 1000);
+  const active = animatedCaptionData.events
+    .filter(event => tMs + 40 >= event.startMs && tMs <= event.endMs + 40)
+    .slice(-24);
+  const key = active.map(event => `${event.id}:${event.startMs}:${event.endMs}`).join('|');
+  if (!force && key === animatedCaptionFrameKey) return;
+  animatedCaptionFrameKey = key;
+  stage.innerHTML = active.map(event => (
+    `<div class="ytm-animated-caption-cue" style="${getTimedTextCueStyle(event)}">${getTimedTextSegmentHtml(event)}</div>`
+  )).join('');
+}
+
+function setupMovieMode() {
+  const resizeObserver = new ResizeObserver(() => {
+    window.dispatchEvent(new Event('resize'));
+  });
+  const targetWrapper = document.getElementById("ytm-custom-wrapper");
+  if (targetWrapper) {
+    resizeObserver.observe(targetWrapper);
+  } else {
+    resizeObserver.observe(document.body);
+  }
+
+  const check = () => {
+    const video = document.querySelector("ytmusic-player#player.style-scope.ytmusic-player-page");
+    const target = document.querySelector("#ytm-custom-wrapper");
+    const switcher = document.querySelector("ytmusic-av-toggle");
+    const switcherTarget = document.querySelector("#ytm-custom-info-area");
+
+    if (!video || !target || !switcher || !switcherTarget) {
+      setTimeout(check, 300);
+      return;
     }
-    else {
-      if (!originParent.contains(video)) {
-        originParent.insertBefore(video, originTarget);
-      }
+
+    movieObserver = observerMovieModeSetup();
+  };
+  check();
+};
+function bringSwitcherOnly() {
+  const switcher = document.querySelector("ytmusic-av-toggle");
+  const customSwitcherParent = document.querySelector("#ytm-custom-info-area");
+  customSwitcherParent.appendChild(switcher);
+}
+function changeIModeUIWithMovieMode(mode) {
+  if (!mode) {
+    moviemode = null;
+    if (movieObserver) movieObserver.stop();
+    movieObserver = null;
+    const switcher = document.querySelector("ytmusic-av-toggle");
+    const video = document.querySelector("ytmusic-player#player");
+    const originParent = document.querySelector("div#main-panel");
+    const originSwitcherTarget = originParent.children[1];
+    const originTarget = originParent.children[2];
+    if (!originParent.contains(video)) {
+      originParent.insertBefore(video, originTarget);
     }
-    setTimeout(() => {
-      window.dispatchEvent(new Event('resize'));
-    }, 100);
+    if (!originParent.contains(switcher)) {
+      originSwitcherTarget.appendChild(switcher);
+    }
     setTimeout(() => {
       window.dispatchEvent(new Event('resize'));
     }, 300);
   }
-  function isYTMPremiumUser() {
-    const switcher = document.querySelector("ytmusic-av-toggle");
-    const requireSignIn = !!document.querySelector('ytmusic-guide-signin-promo-renderer');
-    const primarySection = document.querySelector('#mini-guide ytmusic-guide-section-renderer[is-primary] div#items');
-    const notPremium = primarySection ? primarySection.childNodes.length >= 4 : false;
-    if(!requireSignIn && !notPremium){
-      if(switcher) switcher.classList.remove('notpremium');
-    }
-    else {
-      if(switcher) switcher.classList.add('notpremium');
-    }
-    return !requireSignIn || !notPremium;
+  else {
+    if (movieObserver) movieObserver.stop();
+    movieObserver = null;
+    movieObserver = observerMovieModeSetup();
+  }
+}
+const observerMovieModeSetup = () => {
+  const switcher = document.querySelector("ytmusic-av-toggle");
+  if (!switcher) return null;
+
+  if (movieObserver) {
+    movieObserver.stop();
+    movieObserver = null;
   }
 
-  function preferLyricsDefault(targetKey, attempt = 0) {
-    if (!targetKey || currentKey !== targetKey) return;
+  let changed;
+  let classTargets = [];
 
-    const switcher = document.querySelector("ytmusic-av-toggle");
-    if (!switcher) {
-      if (attempt < 10) setTimeout(() => preferLyricsDefault(targetKey, attempt + 1), 300);
-      return;
-    }
-
+  const handleMutation = () => {
     const mode = switcher.getAttribute("playback-mode");
-    if (mode === "ATV_PREFERRED") return;
-    if (mode && mode !== "OMV_PREFERRED") return;
+    const newMoviemode = (mode === "OMV_PREFERRED") ? true : false;
 
-    const songBtn = switcher.querySelector('.song-button.ytmusic-av-toggle, .song-button');
-    if (!songBtn) {
-      if (attempt < 10) setTimeout(() => preferLyricsDefault(targetKey, attempt + 1), 300);
-      return;
+    if (moviemode !== newMoviemode) {
+      changed = true;
+    } else {
+      changed = false;
     }
 
-    try {
-      songBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
-      if (typeof songBtn.click === 'function') songBtn.click();
-    } catch (e) {
-      console.warn('Failed to switch default playback mode to lyrics', e);
-    }
+    moviemode = newMoviemode;
 
-    if (attempt < 10) {
-      setTimeout(() => {
-        if (currentKey !== targetKey) return;
-        const latestMode = switcher.getAttribute("playback-mode");
-        if (latestMode !== "ATV_PREFERRED") {
-          preferLyricsDefault(targetKey, attempt + 1);
-        }
-      }, 250);
+    classTargets = [];
+    const wrapper = document.querySelector("#ytm-custom-wrapper");
+    if (wrapper instanceof Element) {
+      classTargets.push(...wrapper.querySelectorAll("*"));
+    }
+    const pusher = (element) => {
+      if (element instanceof Element) classTargets.push(element);
+    };
+    const playerBar = document.querySelector("ytmusic-player-bar");
+    pusher(playerBar);
+    pusher(switcher);
+    const video = document.querySelector("ytmusic-player#player");
+    pusher(video);
+    const navBar = document.querySelector("ytmusic-nav-bar");
+    pusher(navBar);
+
+    classTargets.forEach(element => {
+      if (moviemode) {
+        element.classList.add("moviemode");
+      } else {
+        element.classList.remove("moviemode");
+      }
+    });
+
+    changeUIWithMovieMode(changed);
+  };
+
+  handleMutation();
+  bringSwitcherOnly();
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      if (mutation.type === "attributes" && mutation.attributeName === "playback-mode") {
+        handleMutation();
+      }
+    });
+  });
+
+  observer.observe(switcher, { attributes: true });
+
+  movieObserver = {
+    stop: () => {
+      observer.disconnect();
+      movieObserver = null;
+    }
+  };
+
+  return movieObserver;
+};
+function changeUIWithMovieMode(changed) {
+  if (!changed || changed === null) return;
+  const originParent = document.querySelector("div#main-panel");
+  const originTarget = originParent.children[2];
+  const customParent = document.querySelector("#ytm-custom-wrapper");
+  const customSwitcherParent = document.querySelector("#ytm-custom-info-area");
+  const switcher = document.querySelector("ytmusic-av-toggle");
+  const video = document.querySelector("ytmusic-player#player.style-scope.ytmusic-player-page");
+
+  if (moviemode) {
+    customParent.prepend(video);
+    customSwitcherParent.appendChild(switcher);
+  }
+  else {
+    if (!originParent.contains(video)) {
+      originParent.insertBefore(video, originTarget);
     }
   }
-  const hoverTimeInfoSetup = () => {
-    const timeToSeconds = (str) => {
-      const [m, s] = str.split(":").map(Number);
-      return m * 60 + s;
-    };
-    const removeHoverTimeInfo = () => {
-      const info = document.querySelector('#hover-time-info');
-      const interval = setInterval(() => {
-        if (info) {
-          info.remove();
-          clearInterval(interval);
-        }
-      }, 1000);
-    };
-    const createHoverTimeInfo = () => {
-      let info = document.querySelector('#hover-time-info-new');
-      const parent = document.querySelector('ytmusic-player-bar');
-      if (!info) {
-        info = document.createElement('span');
-        info.id = 'hover-time-info-new';
-        info.style.display = 'none';
-        info.textContent = '0:00';
-        document.body.appendChild(info);
+  setTimeout(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, 100);
+  setTimeout(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, 300);
+}
+function isYTMPremiumUser() {
+  const switcher = document.querySelector("ytmusic-av-toggle");
+  const requireSignIn = !!document.querySelector('ytmusic-guide-signin-promo-renderer');
+  const primarySection = document.querySelector('#mini-guide ytmusic-guide-section-renderer[is-primary] div#items');
+  const notPremium = primarySection ? primarySection.childNodes.length >= 4 : false;
+  if (!requireSignIn && !notPremium) {
+    if (switcher) switcher.classList.remove('notpremium');
+  }
+  else {
+    if (switcher) switcher.classList.add('notpremium');
+  }
+  return !requireSignIn || !notPremium;
+}
+
+function preferLyricsDefault(targetKey, attempt = 0) {
+  if (!targetKey || currentKey !== targetKey) return;
+
+  const switcher = document.querySelector("ytmusic-av-toggle");
+  if (!switcher) {
+    if (attempt < 10) setTimeout(() => preferLyricsDefault(targetKey, attempt + 1), 300);
+    return;
+  }
+
+  const mode = switcher.getAttribute("playback-mode");
+  if (mode === "ATV_PREFERRED") return;
+  if (mode && mode !== "OMV_PREFERRED") return;
+
+  const songBtn = switcher.querySelector('.song-button.ytmusic-av-toggle, .song-button');
+  if (!songBtn) {
+    if (attempt < 10) setTimeout(() => preferLyricsDefault(targetKey, attempt + 1), 300);
+    return;
+  }
+
+  try {
+    songBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+    if (typeof songBtn.click === 'function') songBtn.click();
+  } catch (e) {
+    console.warn('Failed to switch default playback mode to lyrics', e);
+  }
+
+  if (attempt < 10) {
+    setTimeout(() => {
+      if (currentKey !== targetKey) return;
+      const latestMode = switcher.getAttribute("playback-mode");
+      if (latestMode !== "ATV_PREFERRED") {
+        preferLyricsDefault(targetKey, attempt + 1);
       }
-    };
-    const adjustHoverTimeInfoPosition = () => {
-      const progresshandle = document.querySelector('tp-yt-paper-slider#progress-bar #sliderKnob');
-      const info = document.querySelector('#hover-time-info-new');
-      const slider = document.querySelector(
-        'tp-yt-paper-slider#progress-bar tp-yt-paper-progress#sliderBar #primaryProgress'
-      ).parentElement.parentElement;
-      const playerBar = document.querySelector('ytmusic-player-bar');
-      const refresh = () => {
-        const onMove = (e) => {
-          const marginLeft = (playerBar.parentElement.offsetWidth - playerBar.offsetWidth) / 2;
-          const infoLeft = e.clientX;
-          const relativeMouseX = e.clientX - marginLeft;
-          const timeinfo = document.querySelector('#left-controls > span');
-          const songLengthSeconds = timeToSeconds(timeinfo.textContent.replace(/^[^/]+\/\s*/, ""));
-          const relativePosition = Math.round((Math.min(1, Math.max(0, (relativeMouseX / slider.offsetWidth)))) * 1000) / 1000;
-          const hoverTimeSeconds = Math.floor(songLengthSeconds * relativePosition);
-          const hoverTimeString = `${String(Math.floor(hoverTimeSeconds / 60))}:${String(hoverTimeSeconds % 60).padStart(2, '0')}`;
-          info.style.display = 'block';
-          info.style.left = `${infoLeft}px`;
-          info.textContent = hoverTimeString;
-        };
-        const hide = () => {
-          info.style.display = 'none';
-        };
-        slider.addEventListener('mousemove', onMove);
-        slider.addEventListener('mouseout', hide);
-        progresshandle.addEventListener('mousemove', onMove);
-        progresshandle.addEventListener('mouseout', hide);
+    }, 250);
+  }
+}
+const hoverTimeInfoSetup = () => {
+  const timeToSeconds = (str) => {
+    const [m, s] = str.split(":").map(Number);
+    return m * 60 + s;
+  };
+  const removeHoverTimeInfo = () => {
+    const info = document.querySelector('#hover-time-info');
+    const interval = setInterval(() => {
+      if (info) {
+        info.remove();
+        clearInterval(interval);
+      }
+    }, 1000);
+  };
+  const createHoverTimeInfo = () => {
+    let info = document.querySelector('#hover-time-info-new');
+    const parent = document.querySelector('ytmusic-player-bar');
+    if (!info) {
+      info = document.createElement('span');
+      info.id = 'hover-time-info-new';
+      info.style.display = 'none';
+      info.textContent = '0:00';
+      document.body.appendChild(info);
+    }
+  };
+  const adjustHoverTimeInfoPosition = () => {
+    const progresshandle = document.querySelector('tp-yt-paper-slider#progress-bar #sliderKnob');
+    const info = document.querySelector('#hover-time-info-new');
+    const slider = document.querySelector(
+      'tp-yt-paper-slider#progress-bar tp-yt-paper-progress#sliderBar #primaryProgress'
+    ).parentElement.parentElement;
+    const playerBar = document.querySelector('ytmusic-player-bar');
+    const refresh = () => {
+      const onMove = (e) => {
+        const marginLeft = (playerBar.parentElement.offsetWidth - playerBar.offsetWidth) / 2;
+        const infoLeft = e.clientX;
+        const relativeMouseX = e.clientX - marginLeft;
+        const timeinfo = document.querySelector('#left-controls > span');
+        const songLengthSeconds = timeToSeconds(timeinfo.textContent.replace(/^[^/]+\/\s*/, ""));
+        const relativePosition = Math.round((Math.min(1, Math.max(0, (relativeMouseX / slider.offsetWidth)))) * 1000) / 1000;
+        const hoverTimeSeconds = Math.floor(songLengthSeconds * relativePosition);
+        const hoverTimeString = `${String(Math.floor(hoverTimeSeconds / 60))}:${String(hoverTimeSeconds % 60).padStart(2, '0')}`;
+        info.style.display = 'block';
+        info.style.left = `${infoLeft}px`;
+        info.textContent = hoverTimeString;
       };
-      const interval = setInterval(() => {
-        if (slider && info && progresshandle) {
-          refresh();
-          clearInterval(interval);
-        }
-      }, 1000);
+      const hide = () => {
+        info.style.display = 'none';
+      };
+      slider.addEventListener('mousemove', onMove);
+      slider.addEventListener('mouseout', hide);
+      progresshandle.addEventListener('mousemove', onMove);
+      progresshandle.addEventListener('mouseout', hide);
     };
-    removeHoverTimeInfo();
-    createHoverTimeInfo();
-    adjustHoverTimeInfoPosition();
+    const interval = setInterval(() => {
+      if (slider && info && progresshandle) {
+        refresh();
+        clearInterval(interval);
+      }
+    }, 1000);
   };
+  removeHoverTimeInfo();
+  createHoverTimeInfo();
+  adjustHoverTimeInfoPosition();
+};
 
-  const parseLRCNoFlag = (lrc) => {
-    return parseLRCInternal(lrc).lines;
-  };
+const parseLRCNoFlag = (lrc) => {
+  return parseLRCInternal(lrc).lines;
+};
 
-  const normalizeStr = (s) => (s || '').replace(/\s+/g, '').trim();
+const normalizeStr = (s) => (s || '').replace(/\s+/g, '').trim();
 
-  const isMixedLang = (s) => {
-    if (!s) return false;
-    const hasLatin = /[A-Za-z]/.test(s);
-    const hasCJK = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(s);
-    const hasHangul = /[\uAC00-\uD7AF]/.test(s);
-    let kinds = 0;
-    if (hasLatin) kinds++;
-    if (hasCJK) kinds++;
-    if (hasHangul) kinds++;
-    return kinds >= 2;
-  };
+const isMixedLang = (s) => {
+  if (!s) return false;
+  const hasLatin = /[A-Za-z]/.test(s);
+  const hasCJK = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(s);
+  const hasHangul = /[\uAC00-\uD7AF]/.test(s);
+  let kinds = 0;
+  if (hasLatin) kinds++;
+  if (hasCJK) kinds++;
+  if (hasHangul) kinds++;
+  return kinds >= 2;
+};
 
-  const detectCharScript = (ch) => {
-    if (!ch) return 'OTHER';
-    if (/[A-Za-z]/.test(ch)) return 'LATIN';
-    if (/[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(ch)) return 'CJK';
-    if (/[\uAC00-\uD7AF]/.test(ch)) return 'HANGUL';
-    return 'OTHER';
-  };
+const detectCharScript = (ch) => {
+  if (!ch) return 'OTHER';
+  if (/[A-Za-z]/.test(ch)) return 'LATIN';
+  if (/[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/.test(ch)) return 'CJK';
+  if (/[\uAC00-\uD7AF]/.test(ch)) return 'HANGUL';
+  return 'OTHER';
+};
 
-  const segmentByScript = (s) => {
-    const result = [];
-    if (!s) return result;
-    let currentScript = null;
-    let buf = '';
-    for (const ch of s) {
-      const script = detectCharScript(ch);
-      if (currentScript === null) {
-        currentScript = script;
-        buf = ch;
-      } else if (script === currentScript) {
-        buf += ch;
-      } else {
-        result.push({ script: currentScript, text: buf });
-        currentScript = script;
-        buf = ch;
+const segmentByScript = (s) => {
+  const result = [];
+  if (!s) return result;
+  let currentScript = null;
+  let buf = '';
+  for (const ch of s) {
+    const script = detectCharScript(ch);
+    if (currentScript === null) {
+      currentScript = script;
+      buf = ch;
+    } else if (script === currentScript) {
+      buf += ch;
+    } else {
+      result.push({ script: currentScript, text: buf });
+      currentScript = script;
+      buf = ch;
+    }
+  }
+  if (buf) {
+    result.push({ script: currentScript, text: buf });
+  }
+  return result;
+};
+
+const shouldTranslateSegment = (script, langCode) => {
+  const lang = (langCode || '').toLowerCase();
+  if (script === 'OTHER') return false;
+  switch (lang) {
+    case 'ja': return script === 'LATIN' || script === 'HANGUL';
+    case 'en': return script === 'CJK' || script === 'HANGUL';
+    case 'ko': return script === 'LATIN' || script === 'CJK';
+    default: return script !== 'LATIN';
+  }
+};
+
+const translateMixedSegments = async (lines, indexes, langCode, targetLang) => {
+  try {
+    const segmentsToTranslate = [];
+    const perLineSegments = {};
+    indexes.forEach(idx => {
+      const line = lines[idx];
+      const text = (line && line.text) || '';
+      const segs = segmentByScript(text);
+      const segMeta = [];
+      segs.forEach(seg => {
+        if (shouldTranslateSegment(seg.script, langCode)) {
+          const translateIndex = segmentsToTranslate.length;
+          segmentsToTranslate.push(seg.text);
+          segMeta.push({ original: seg.text, translateIndex });
+        } else {
+          segMeta.push({ original: seg.text, translateIndex: null });
+        }
+      });
+      perLineSegments[idx] = segMeta;
+    });
+    if (!segmentsToTranslate.length) return null;
+    const res = await new Promise(resolve => {
+      chrome.runtime.sendMessage(
+        { type: 'TRANSLATE', payload: { text: segmentsToTranslate, apiKey: config.deepLKey, targetLang, useSharedTranslateApi: (config.useSharedTranslateApi) } },
+        resolve
+      );
+    });
+    if (!res?.success || !Array.isArray(res.translations) || res.translations.length !== segmentsToTranslate.length) {
+      return null;
+    }
+    const segTranslations = res.translations.map(t => t.text || '');
+    const result = {};
+    Object.keys(perLineSegments).forEach(key => {
+      const lineIdx = Number(key);
+      const segMeta = perLineSegments[lineIdx];
+      let rebuilt = '';
+      segMeta.forEach(seg => {
+        if (seg.translateIndex == null) {
+          rebuilt += seg.original;
+        } else {
+          rebuilt += segTranslations[seg.translateIndex] ?? seg.original;
+        }
+      });
+      result[lineIdx] = rebuilt;
+    });
+    return result;
+  } catch (e) {
+    console.error('DeepL mixed-line fallback failed', e);
+    return null;
+  }
+};
+
+const dedupePrimarySecondary = (lines) => {
+  if (!Array.isArray(lines)) return lines;
+  lines.forEach(l => {
+    if (!l.translation) return;
+    const src = normalizeStr(l.text);
+    const trn = normalizeStr(l.translation);
+    if (src === trn && !isMixedLang(l.text)) {
+      delete l.translation;
+    }
+  });
+  return lines;
+};
+
+const translateTo = async (lines, langCode) => {
+  if ((!config.deepLKey && !(config.useSharedTranslateApi)) || !lines.length) return null;
+  const targetLang = resolveDeepLTargetLang(langCode);
+  try {
+    const baseTexts = lines.map(l => (l && l.text !== undefined && l.text !== null) ? String(l.text) : '');
+    // 空行は翻訳APIへ送らず、行数だけ保持してタイムスタンプのズレを防ぐ
+    const mapIdx = [];
+    const requestTexts = [];
+    for (let i = 0; i < baseTexts.length; i++) {
+      const t = baseTexts[i];
+      if ((t || '').trim()) {
+        mapIdx.push(i);
+        requestTexts.push(t);
       }
     }
-    if (buf) {
-      result.push({ script: currentScript, text: buf });
-    }
-    return result;
-  };
 
-  const shouldTranslateSegment = (script, langCode) => {
-    const lang = (langCode || '').toLowerCase();
-    if (script === 'OTHER') return false;
-    switch (lang) {
-      case 'ja': return script === 'LATIN' || script === 'HANGUL';
-      case 'en': return script === 'CJK' || script === 'HANGUL';
-      case 'ko': return script === 'LATIN' || script === 'CJK';
-      default: return script !== 'LATIN';
-    }
-  };
+    let translated = new Array(lines.length).fill('');
 
-  const translateMixedSegments = async (lines, indexes, langCode, targetLang) => {
-    try {
-      const segmentsToTranslate = [];
-      const perLineSegments = {};
-      indexes.forEach(idx => {
-        const line = lines[idx];
-        const text = (line && line.text) || '';
-        const segs = segmentByScript(text);
-        const segMeta = [];
-        segs.forEach(seg => {
-          if (shouldTranslateSegment(seg.script, langCode)) {
-            const translateIndex = segmentsToTranslate.length;
-            segmentsToTranslate.push(seg.text);
-            segMeta.push({ original: seg.text, translateIndex });
-          } else {
-            segMeta.push({ original: seg.text, translateIndex: null });
-          }
-        });
-        perLineSegments[idx] = segMeta;
-      });
-      if (!segmentsToTranslate.length) return null;
+    if (requestTexts.length) {
       const res = await new Promise(resolve => {
         chrome.runtime.sendMessage(
-          { type: 'TRANSLATE', payload: { text: segmentsToTranslate, apiKey: config.deepLKey, targetLang, useSharedTranslateApi: (config.useSharedTranslateApi) } },
+          { type: 'TRANSLATE', payload: { text: requestTexts, apiKey: config.deepLKey, targetLang, useSharedTranslateApi: (config.useSharedTranslateApi) } },
           resolve
         );
       });
-      if (!res?.success || !Array.isArray(res.translations) || res.translations.length !== segmentsToTranslate.length) {
+
+      if (!res?.success || !Array.isArray(res.translations) || res.translations.length !== requestTexts.length) {
         return null;
       }
-      const segTranslations = res.translations.map(t => t.text || '');
-      const result = {};
-      Object.keys(perLineSegments).forEach(key => {
-        const lineIdx = Number(key);
-        const segMeta = perLineSegments[lineIdx];
-        let rebuilt = '';
-        segMeta.forEach(seg => {
-          if (seg.translateIndex == null) {
-            rebuilt += seg.original;
-          } else {
-            rebuilt += segTranslations[seg.translateIndex] ?? seg.original;
-          }
-        });
-        result[lineIdx] = rebuilt;
-      });
-      return result;
-    } catch (e) {
-      console.error('DeepL mixed-line fallback failed', e);
-      return null;
+
+      for (let i = 0; i < mapIdx.length; i++) {
+        const tr = res.translations[i];
+        translated[mapIdx[i]] = (tr && tr.text) ? tr.text : '';
+      }
     }
-  };
-
-  const dedupePrimarySecondary = (lines) => {
-    if (!Array.isArray(lines)) return lines;
-    lines.forEach(l => {
-      if (!l.translation) return;
-      const src = normalizeStr(l.text);
-      const trn = normalizeStr(l.translation);
-      if (src === trn && !isMixedLang(l.text)) {
-        delete l.translation;
+    const fallbackIndexes = [];
+    for (let i = 0; i < lines.length; i++) {
+      const src = baseTexts[i];
+      const trn = translated[i];
+      if (!src) continue;
+      if (normalizeStr(src) === normalizeStr(trn) && isMixedLang(src)) {
+        fallbackIndexes.push(i);
       }
-    });
-    return lines;
-  };
-
-  const translateTo = async (lines, langCode) => {
-    if ((!config.deepLKey && !(config.useSharedTranslateApi)) || !lines.length) return null;
-    const targetLang = resolveDeepLTargetLang(langCode);
-    try {
-      const baseTexts = lines.map(l => (l && l.text !== undefined && l.text !== null) ? String(l.text) : '');
-      // 空行は翻訳APIへ送らず、行数だけ保持してタイムスタンプのズレを防ぐ
-      const mapIdx = [];
-      const requestTexts = [];
-      for (let i = 0; i < baseTexts.length; i++) {
-        const t = baseTexts[i];
-        if ((t || '').trim()) {
-          mapIdx.push(i);
-          requestTexts.push(t);
-        }
-      }
-
-      let translated = new Array(lines.length).fill('');
-
-      if (requestTexts.length) {
-        const res = await new Promise(resolve => {
-          chrome.runtime.sendMessage(
-            { type: 'TRANSLATE', payload: { text: requestTexts, apiKey: config.deepLKey, targetLang, useSharedTranslateApi: (config.useSharedTranslateApi) } },
-            resolve
-          );
-        });
-
-        if (!res?.success || !Array.isArray(res.translations) || res.translations.length !== requestTexts.length) {
-          return null;
-        }
-
-        for (let i = 0; i < mapIdx.length; i++) {
-          const tr = res.translations[i];
-          translated[mapIdx[i]] = (tr && tr.text) ? tr.text : '';
-        }
-      }
-      const fallbackIndexes = [];
-      for (let i = 0; i < lines.length; i++) {
-        const src = baseTexts[i];
-        const trn = translated[i];
-        if (!src) continue;
-        if (normalizeStr(src) === normalizeStr(trn) && isMixedLang(src)) {
-          fallbackIndexes.push(i);
-        }
-      }
-      if (fallbackIndexes.length) {
-        const mixedFallback = await translateMixedSegments(lines, fallbackIndexes, langCode, targetLang);
-        if (mixedFallback) {
-          fallbackIndexes.forEach(i => {
-            if (mixedFallback[i]) translated[i] = mixedFallback[i];
-          });
-        }
-      }
-      return translated;
-    } catch (e) {
-      console.error('DeepL failed', e);
     }
+    if (fallbackIndexes.length) {
+      const mixedFallback = await translateMixedSegments(lines, fallbackIndexes, langCode, targetLang);
+      if (mixedFallback) {
+        fallbackIndexes.forEach(i => {
+          if (mixedFallback[i]) translated[i] = mixedFallback[i];
+        });
+      }
+    }
+    return translated;
+  } catch (e) {
+    console.error('DeepL failed', e);
+  }
+  return null;
+};
+
+
+const getMetadata = () => {
+  // Prefer MediaSession metadata (most accurate)
+  if (navigator.mediaSession?.metadata) {
+    const { title, artist, album, artwork } = navigator.mediaSession.metadata;
+    return {
+      title: (title || '').toString(),
+      artist: (artist || '').toString(),
+      album: (album || '').toString(),
+      src: Array.isArray(artwork) && artwork.length ? artwork[artwork.length - 1].src : null
+    };
+  }
+
+  // Fallback: read from player bar
+  const tEl = document.querySelector('yt-formatted-string.title.style-scope.ytmusic-player-bar');
+  const aEl = document.querySelector('.byline.style-scope.ytmusic-player-bar');
+  if (!(tEl && aEl)) return null;
+
+  const parts = (aEl.textContent || '')
+    .split('•')
+    .map(s => (s || '').trim())
+    .filter(Boolean);
+
+  return {
+    title: (tEl.textContent || '').trim(),
+    artist: parts[0] || '',
+    album: parts[1] || '',
+    src: null
+  };
+};
+
+
+const extractVideoIdFromHref = (href) => {
+  if (!href) return null;
+  try {
+    const url = new URL(href, location.origin);
+    const vid = url.searchParams.get('v');
+    if (vid) return vid;
+    if (url.hostname.includes('youtu.be')) {
+      return (url.pathname || '').split('/').filter(Boolean)[0] || null;
+    }
+  } catch (e) { }
+  return null;
+};
+
+const getCurrentVideoIdFromDom = () => {
+  const selectors = [
+    'ytmusic-player-bar yt-formatted-string.title a[href*="watch"]',
+    'ytmusic-player-bar a[href*="watch?v="]'
+  ];
+
+  for (const selector of selectors) {
+    const link = document.querySelector(selector);
+    const vid = extractVideoIdFromHref(link && (link.href || link.getAttribute('href')));
+    if (vid) return vid;
+  }
+  return null;
+};
+
+const getCurrentVideoUrl = () => {
+  try {
+    const domVid = getCurrentVideoIdFromDom();
+    if (domVid) return `https://youtu.be/${domVid}`;
+
+    const url = new URL(location.href);
+    const vid = url.searchParams.get('v');
+    return vid ? `https://youtu.be/${vid}` : location.href;
+  } catch (e) {
+    console.warn('Failed to get current video url', e);
+    return '';
+  }
+};
+
+const getCurrentVideoId = () => {
+  try {
+    const domVid = getCurrentVideoIdFromDom();
+    if (domVid) return domVid;
+
+    const url = new URL(location.href);
+    return url.searchParams.get('v');
+  } catch (e) {
     return null;
+  }
+};
+
+// === BG からの後追いメタ更新（遅い方待ちをやめた時用）===
+// Metadata can arrive after lyrics; refresh related UI when it does.
+chrome.runtime.onMessage.addListener((msg) => {
+  try {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type !== 'LYRICS_META_UPDATE') return;
+    const p = msg.payload || {};
+    const curVid = getCurrentVideoId();
+    if (p.video_id && curVid && p.video_id !== curVid) return;
+
+    if (Array.isArray(p.candidates)) lyricsCandidates = p.candidates;
+    if (p.config !== undefined) lyricsConfig = p.config;
+    if (Array.isArray(p.requests)) lyricsRequests = p.requests;
+    syncLyricsLockState();
+
+    // duet: sub lyrics can arrive later
+    if (typeof p.subLyrics === 'string') {
+      duetSubLyricsRaw = p.subLyrics;
+      // re-render with same raw lyrics to avoid showing duplicate left+right lines
+      if (lastRawLyricsText && typeof lastRawLyricsText === 'string') {
+        applyLyricsText(lastRawLyricsText);
+      }
+    }
+
+    // dynamic: char-timed lines can arrive later even if lyrics came from API
+    if (Array.isArray(p.dynamicLines) && p.dynamicLines.length) {
+      dynamicLines = p.dynamicLines;
+      // re-render to attach per-char spans while keeping current lines/translations
+      if (Array.isArray(lyricsData) && lyricsData.length) {
+        renderLyrics(lyricsData);
+      }
+    }
+
+    // candidates/config が更新されたらメニューを再描画
+    const incomingMeaningData = normalizeMeaningPayloadLocal(p);
+    if (incomingMeaningData) {
+      setLyricsMeaningData(incomingMeaningData);
+      persistMeaningDataToCurrentCache().catch(() => { });
+      if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
+    }
+
+    refreshCandidateMenu();
+    refreshLockMenu();
+  } catch (e) {
+    // ignore
+  }
+});
+
+const createEl = (tag, id, cls, html) => {
+  const el = document.createElement(tag);
+  if (id) el.id = id;
+  if (cls) el.className = cls;
+  if (html !== undefined && html !== null) el.innerHTML = html;
+  return el;
+};
+
+const showToast = (text) => {
+  if (!text) return;
+  let el = document.getElementById('ytm-toast');
+  if (!el) {
+    el = createEl('div', 'ytm-toast', '', '');
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.classList.remove('visible');
+  }, 5000);
+};
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const parseMeaningTimeToSecLocal = (value) => {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return value > 10000 ? value / 1000 : value;
+  }
+  const s = String(value || '').trim();
+  const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
+  if (!m) return null;
+  const min = Number(m[1]);
+  const sec = Number(m[2]);
+  let frac = m[3] || '0';
+  if (frac.length === 1) frac += '00';
+  else if (frac.length === 2) frac += '0';
+  const ms = Number(frac.slice(0, 3));
+  if (!Number.isFinite(min) || !Number.isFinite(sec) || !Number.isFinite(ms)) return null;
+  return (min * 60) + sec + (ms / 1000);
+};
+
+const formatMeaningTimeLocal = (seconds) => {
+  if (typeof seconds !== 'number' || Number.isNaN(seconds)) return '';
+  const total = Math.max(0, seconds);
+  const min = Math.floor(total / 60);
+  const sec = Math.floor(total - min * 60);
+  const cs = Math.floor((total - min * 60 - sec) * 100);
+  return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+};
+
+const normalizeMeaningStringListLocal = (value) => {
+  if (Array.isArray(value)) return value.map(v => String(v || '').trim()).filter(Boolean);
+  if (typeof value === 'string') return value.split(/[,\n]/).map(v => v.trim()).filter(Boolean);
+  return [];
+};
+
+const normalizeMeaningSourceLocal = (payload) => {
+  if (!payload) return null;
+  if (Array.isArray(payload)) return { explanations: payload };
+  if (typeof payload !== 'object') return null;
+
+  const rawMeaningData = payload.meaningData;
+  if (!rawMeaningData) return payload;
+
+  const meaningData = Array.isArray(rawMeaningData)
+    ? { explanations: rawMeaningData }
+    : (typeof rawMeaningData === 'object' ? rawMeaningData : {});
+
+  return {
+    ...payload,
+    ...meaningData,
+    explanations: Array.isArray(meaningData.explanations)
+      ? meaningData.explanations
+      : (Array.isArray(payload.explanations) ? payload.explanations : []),
+    timeline_meanings: Array.isArray(meaningData.timeline_meanings)
+      ? meaningData.timeline_meanings
+      : (Array.isArray(payload.timeline_meanings) ? payload.timeline_meanings : []),
+    song_summary: meaningData.song_summary || meaningData.songSummary || payload.song_summary || payload.songSummary || null,
+    final_summary: meaningData.final_summary || payload.final_summary || null,
+    comments: Array.isArray(meaningData.comments) ? meaningData.comments : (Array.isArray(payload.comments) ? payload.comments : []),
+    rating: meaningData.rating || payload.rating || null,
   };
+};
 
-
-  const getMetadata = () => {
-    // Prefer MediaSession metadata (most accurate)
-    if (navigator.mediaSession?.metadata) {
-      const { title, artist, album, artwork } = navigator.mediaSession.metadata;
+const normalizeMeaningCommentsLocal = (comments) => {
+  if (!Array.isArray(comments)) return [];
+  return comments
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const body = String(item.body || item.comment || item.text || '').trim();
+      if (!body) return null;
       return {
-        title: (title || '').toString(),
-        artist: (artist || '').toString(),
-        album: (album || '').toString(),
-        src: Array.isArray(artwork) && artwork.length ? artwork[artwork.length - 1].src : null
+        body,
+        contributorName: String(item.contributor_name || item.contributorName || item.user || item.name || '').trim(),
+        createdAt: String(item.created_at || item.createdAt || '').trim(),
       };
-    }
+    })
+    .filter(Boolean);
+};
 
-    // Fallback: read from player bar
-    const tEl = document.querySelector('yt-formatted-string.title.style-scope.ytmusic-player-bar');
-    const aEl = document.querySelector('.byline.style-scope.ytmusic-player-bar');
-    if (!(tEl && aEl)) return null;
-
-    const parts = (aEl.textContent || '')
-      .split('•')
-      .map(s => (s || '').trim())
-      .filter(Boolean);
-
-    return {
-      title: (tEl.textContent || '').trim(),
-      artist: parts[0] || '',
-      album: parts[1] || '',
-      src: null
-    };
+const normalizeMeaningRatingLocal = (rating) => {
+  if (!rating || typeof rating !== 'object') return null;
+  const average = Number(rating.average ?? rating.avg ?? rating.score);
+  const count = Number(rating.count ?? rating.total ?? rating.votes);
+  const hasAverage = Number.isFinite(average);
+  const hasCount = Number.isFinite(count);
+  if (!hasAverage && !hasCount) return null;
+  return {
+    average: hasAverage ? average : null,
+    count: hasCount ? count : null,
   };
+};
 
+const normalizeMeaningPayloadLocal = (payload) => {
+  const source = normalizeMeaningSourceLocal(payload);
+  if (!source || typeof source !== 'object') return null;
 
-  const extractVideoIdFromHref = (href) => {
-    if (!href) return null;
+  // Handle new LRCHub "explanations" format
+  const rawTimeline = Array.isArray(source.explanations) ? source.explanations : (Array.isArray(source.timeline_meanings) ? source.timeline_meanings : []);
+
+  const timeline = rawTimeline
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+
+      // Map from either new LRCHub spec or old spec
+      const startRaw = String(item.start_time || item.start || '').trim();
+      const endRaw = String(item.end_time || item.end || '').trim();
+
+      const startSec = (typeof item.start_ms === 'number') ? item.start_ms / 1000 : parseMeaningTimeToSecLocal(item.start_sec ?? item.startSec ?? startRaw);
+      const endSec = (typeof item.end_ms === 'number') ? item.end_ms / 1000 : parseMeaningTimeToSecLocal(item.end_sec ?? item.endSec ?? endRaw);
+      const start = startRaw || formatMeaningTimeLocal(startSec);
+      const end = endRaw || formatMeaningTimeLocal(endSec);
+
+      return {
+        start,
+        end,
+        startSec,
+        endSec,
+        label: String(item.lyrics || item.label || item.text || '').trim(),
+        summary: String(item.summary || item.synopsis || '').trim(),
+        detail: String(item.meaning || item.detail || item.explanation || item.description || '').trim(),
+        emotion: normalizeMeaningStringListLocal(item.emotion || item.emotions || item.mood),
+        keywords: normalizeMeaningStringListLocal(item.keywords || item.keyword),
+      };
+    })
+    .filter(item => item && (item.label || item.summary || item.detail));
+
+  const songSummaryRaw = source.song_summary && typeof source.song_summary === 'object'
+    ? source.song_summary
+    : (source.songSummary && typeof source.songSummary === 'object' ? source.songSummary : {});
+  const finalSummaryRaw = source.final_summary && typeof source.final_summary === 'object'
+    ? source.final_summary
+    : {};
+  const synopsis = String(songSummaryRaw.synopsis || finalSummaryRaw.synopsis || '').trim();
+  const message = String(songSummaryRaw.message || finalSummaryRaw.message || '').trim();
+  const summaryText = String(songSummaryRaw.summary || finalSummaryRaw.summary || '').trim();
+  const longSummaryParts = [synopsis, message, summaryText].filter(Boolean);
+  const finalSummary = {
+    short: String(finalSummaryRaw.short || synopsis || message || summaryText || '').trim(),
+    long: String(finalSummaryRaw.long || longSummaryParts.join('\n\n') || finalSummaryRaw.short || '').trim(),
+  };
+  const comments = normalizeMeaningCommentsLocal(source.comments);
+  const rating = normalizeMeaningRatingLocal(source.rating);
+
+  if (!timeline.length && !finalSummary.short && !finalSummary.long && !comments.length && !rating) return null;
+
+  return {
+    title: String(source.display_name || source.title || source.track || '').trim(),
+    timeline_meanings: timeline,
+    final_summary: finalSummary,
+    song_summary: { synopsis, message, summary: summaryText },
+    comments,
+    rating,
+  };
+};
+
+const parseMeaningPayloadTextLocal = (text) => {
+  const raw = String(text || '').replace(/^\uFEFF/, '').trim();
+  if (!raw) return null;
+
+  const candidates = [raw];
+  const fenced = raw.match(/```(?:json|txt|text)?\s*([\s\S]*?)```/i);
+  if (fenced && fenced[1]) candidates.push(fenced[1].trim());
+  const firstBrace = raw.indexOf('{');
+  const lastBrace = raw.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(raw.slice(firstBrace, lastBrace + 1).trim());
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
     try {
-      const url = new URL(href, location.origin);
-      const vid = url.searchParams.get('v');
-      if (vid) return vid;
-      if (url.hostname.includes('youtu.be')) {
-        return (url.pathname || '').split('/').filter(Boolean)[0] || null;
-      }
-    } catch (e) { }
-    return null;
-  };
-
-  const getCurrentVideoIdFromDom = () => {
-    const selectors = [
-      'ytmusic-player-bar yt-formatted-string.title a[href*="watch"]',
-      'ytmusic-player-bar a[href*="watch?v="]'
-    ];
-
-    for (const selector of selectors) {
-      const link = document.querySelector(selector);
-      const vid = extractVideoIdFromHref(link && (link.href || link.getAttribute('href')));
-      if (vid) return vid;
-    }
-    return null;
-  };
-
-  const getCurrentVideoUrl = () => {
-    try {
-      const domVid = getCurrentVideoIdFromDom();
-      if (domVid) return `https://youtu.be/${domVid}`;
-
-      const url = new URL(location.href);
-      const vid = url.searchParams.get('v');
-      return vid ? `https://youtu.be/${vid}` : location.href;
+      const parsed = JSON.parse(candidate);
+      const normalized = normalizeMeaningPayloadLocal(parsed);
+      if (normalized) return normalized;
     } catch (e) {
-      console.warn('Failed to get current video url', e);
-      return '';
     }
-  };
+  }
 
-  const getCurrentVideoId = () => {
-    try {
-      const domVid = getCurrentVideoIdFromDom();
-      if (domVid) return domVid;
+  return null;
+};
 
-      const url = new URL(location.href);
-      return url.searchParams.get('v');
-    } catch (e) {
-      return null;
+const getMeaningSegments = () => (
+  lyricsMeaning && Array.isArray(lyricsMeaning.timeline_meanings)
+    ? lyricsMeaning.timeline_meanings
+    : []
+);
+
+const getCurrentPlaybackTimeSec = () => {
+  const v = document.querySelector('video');
+  if (!v || typeof v.currentTime !== 'number' || Number.isNaN(v.currentTime)) return null;
+  let t = v.currentTime;
+  if (!(timeOffset > 0 && t < timeOffset)) {
+    t = Math.max(0, t - timeOffset);
+  }
+  const duration = Number.isFinite(v.duration) ? v.duration : null;
+  t = Math.max(0, t + (config.syncOffset / 1000));
+  if (typeof duration === 'number' && duration > 0) {
+    t = Math.min(t, duration);
+  }
+  return t;
+};
+
+const findMeaningIndexByTime = (timeSec) => {
+  const segments = getMeaningSegments();
+  if (!segments.length) return -1;
+  if (typeof timeSec !== 'number' || Number.isNaN(timeSec)) return 0;
+
+  let fallbackIndex = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    const startSec = typeof segment.startSec === 'number' ? segment.startSec : null;
+    const endSec = typeof segment.endSec === 'number' ? segment.endSec : null;
+
+    if (startSec != null && timeSec + 0.12 >= startSec) {
+      fallbackIndex = i;
     }
-  };
-
-  // === BG からの後追いメタ更新（遅い方待ちをやめた時用）===
-  // Metadata can arrive after lyrics; refresh related UI when it does.
-  chrome.runtime.onMessage.addListener((msg) => {
-    try {
-      if (!msg || typeof msg !== 'object') return;
-      if (msg.type !== 'LYRICS_META_UPDATE') return;
-      const p = msg.payload || {};
-      const curVid = getCurrentVideoId();
-      if (p.video_id && curVid && p.video_id !== curVid) return;
-
-      if (Array.isArray(p.candidates)) lyricsCandidates = p.candidates;
-      if (p.config !== undefined) lyricsConfig = p.config;
-      if (Array.isArray(p.requests)) lyricsRequests = p.requests;
-      syncLyricsLockState();
-
-      // duet: sub lyrics can arrive later
-      if (typeof p.subLyrics === 'string') {
-        duetSubLyricsRaw = p.subLyrics;
-        // re-render with same raw lyrics to avoid showing duplicate left+right lines
-        if (lastRawLyricsText && typeof lastRawLyricsText === 'string') {
-          applyLyricsText(lastRawLyricsText);
-        }
-      }
-
-      // dynamic: char-timed lines can arrive later even if lyrics came from API
-      if (Array.isArray(p.dynamicLines) && p.dynamicLines.length) {
-        dynamicLines = p.dynamicLines;
-        // re-render to attach per-char spans while keeping current lines/translations
-        if (Array.isArray(lyricsData) && lyricsData.length) {
-          renderLyrics(lyricsData);
-        }
-      }
-
-      // candidates/config が更新されたらメニューを再描画
-      const incomingMeaningData = normalizeMeaningPayloadLocal(p);
-      if (incomingMeaningData) {
-        setLyricsMeaningData(incomingMeaningData);
-        persistMeaningDataToCurrentCache().catch(() => { });
-        if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
-      }
-
-      refreshCandidateMenu();
-      refreshLockMenu();
-    } catch (e) {
-      // ignore
+    if ((startSec == null || timeSec + 0.12 >= startSec) &&
+      (endSec == null || timeSec <= endSec + 0.12)) {
+      return i;
     }
-  });
-
-  const createEl = (tag, id, cls, html) => {
-    const el = document.createElement(tag);
-    if (id) el.id = id;
-    if (cls) el.className = cls;
-    if (html !== undefined && html !== null) el.innerHTML = html;
-    return el;
-  };
-
-  const showToast = (text) => {
-    if (!text) return;
-    let el = document.getElementById('ytm-toast');
-    if (!el) {
-      el = createEl('div', 'ytm-toast', '', '');
-      document.body.appendChild(el);
+    if (startSec != null && timeSec < startSec) {
+      break;
     }
-    el.textContent = text;
-    el.classList.add('visible');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      el.classList.remove('visible');
-    }, 5000);
-  };
+  }
 
-  const escapeHtml = (value) => String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return fallbackIndex;
+};
 
-  const parseMeaningTimeToSecLocal = (value) => {
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value)) return null;
-      return value > 10000 ? value / 1000 : value;
-    }
-    const s = String(value || '').trim();
-    const m = s.match(/^(\d+):(\d{2})(?:\.(\d{1,3}))?$/);
-    if (!m) return null;
-    const min = Number(m[1]);
-    const sec = Number(m[2]);
-    let frac = m[3] || '0';
-    if (frac.length === 1) frac += '00';
-    else if (frac.length === 2) frac += '0';
-    const ms = Number(frac.slice(0, 3));
-    if (!Number.isFinite(min) || !Number.isFinite(sec) || !Number.isFinite(ms)) return null;
-    return (min * 60) + sec + (ms / 1000);
-  };
+const resolveMeaningIndex = (preferredTime = null) => {
+  const segments = getMeaningSegments();
+  if (!segments.length) return -1;
+  if (typeof preferredTime === 'number' && !Number.isNaN(preferredTime)) {
+    return findMeaningIndexByTime(preferredTime);
+  }
+  if (lastActiveIndex >= 0 && lyricsData[lastActiveIndex] && typeof lyricsData[lastActiveIndex].time === 'number') {
+    return findMeaningIndexByTime(lyricsData[lastActiveIndex].time);
+  }
+  const now = getCurrentPlaybackTimeSec();
+  if (typeof now === 'number') return findMeaningIndexByTime(now);
+  return 0;
+};
 
-  const formatMeaningTimeLocal = (seconds) => {
-    if (typeof seconds !== 'number' || Number.isNaN(seconds)) return '';
-    const total = Math.max(0, seconds);
-    const min = Math.floor(total / 60);
-    const sec = Math.floor(total - min * 60);
-    const cs = Math.floor((total - min * 60 - sec) * 100);
-    return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
-  };
+const buildMeaningChipGroup = (label, values, kind) => {
+  if (!Array.isArray(values) || !values.length) return '';
+  const chips = values.map((value) => `<span class="ytm-meaning-chip ${kind}">${escapeHtml(value)}</span>`).join('');
+  return `<div class="ytm-meaning-chip-group"><div class="ytm-meaning-chip-label">${escapeHtml(label)}</div><div class="ytm-meaning-chip-list">${chips}</div></div>`;
+};
 
-  const normalizeMeaningStringListLocal = (value) => {
-    if (Array.isArray(value)) return value.map(v => String(v || '').trim()).filter(Boolean);
-    if (typeof value === 'string') return value.split(/[,\n]/).map(v => v.trim()).filter(Boolean);
-    return [];
-  };
+const buildMeaningRatingHtml = () => {
+  const rating = lyricsMeaning && lyricsMeaning.rating;
+  if (!rating) return '';
+  const average = typeof rating.average === 'number' ? rating.average.toFixed(1) : '--';
+  const count = typeof rating.count === 'number' ? `${rating.count}件` : '';
+  return `<div class="ytm-meaning-rating"><span>★ ${escapeHtml(average)}</span>${count ? `<span>${escapeHtml(count)}</span>` : ''}</div>`;
+};
 
-  const normalizeMeaningSourceLocal = (payload) => {
-    if (!payload) return null;
-    if (Array.isArray(payload)) return { explanations: payload };
-    if (typeof payload !== 'object') return null;
+const buildMeaningSummarySectionsHtml = () => {
+  const summary = (lyricsMeaning && lyricsMeaning.song_summary) || {};
+  const sections = [
+    ['あらすじ', summary.synopsis],
+    ['メッセージ', summary.message],
+    ['まとめ', summary.summary],
+  ].filter(([, text]) => String(text || '').trim());
 
-    const rawMeaningData = payload.meaningData;
-    if (!rawMeaningData) return payload;
-
-    const meaningData = Array.isArray(rawMeaningData)
-      ? { explanations: rawMeaningData }
-      : (typeof rawMeaningData === 'object' ? rawMeaningData : {});
-
-    return {
-      ...payload,
-      ...meaningData,
-      explanations: Array.isArray(meaningData.explanations)
-        ? meaningData.explanations
-        : (Array.isArray(payload.explanations) ? payload.explanations : []),
-      timeline_meanings: Array.isArray(meaningData.timeline_meanings)
-        ? meaningData.timeline_meanings
-        : (Array.isArray(payload.timeline_meanings) ? payload.timeline_meanings : []),
-      song_summary: meaningData.song_summary || meaningData.songSummary || payload.song_summary || payload.songSummary || null,
-      final_summary: meaningData.final_summary || payload.final_summary || null,
-      comments: Array.isArray(meaningData.comments) ? meaningData.comments : (Array.isArray(payload.comments) ? payload.comments : []),
-      rating: meaningData.rating || payload.rating || null,
-    };
-  };
-
-  const normalizeMeaningCommentsLocal = (comments) => {
-    if (!Array.isArray(comments)) return [];
-    return comments
-      .map((item) => {
-        if (!item || typeof item !== 'object') return null;
-        const body = String(item.body || item.comment || item.text || '').trim();
-        if (!body) return null;
-        return {
-          body,
-          contributorName: String(item.contributor_name || item.contributorName || item.user || item.name || '').trim(),
-          createdAt: String(item.created_at || item.createdAt || '').trim(),
-        };
-      })
-      .filter(Boolean);
-  };
-
-  const normalizeMeaningRatingLocal = (rating) => {
-    if (!rating || typeof rating !== 'object') return null;
-    const average = Number(rating.average ?? rating.avg ?? rating.score);
-    const count = Number(rating.count ?? rating.total ?? rating.votes);
-    const hasAverage = Number.isFinite(average);
-    const hasCount = Number.isFinite(count);
-    if (!hasAverage && !hasCount) return null;
-    return {
-      average: hasAverage ? average : null,
-      count: hasCount ? count : null,
-    };
-  };
-
-  const normalizeMeaningPayloadLocal = (payload) => {
-    const source = normalizeMeaningSourceLocal(payload);
-    if (!source || typeof source !== 'object') return null;
-
-    // Handle new LRCHub "explanations" format
-    const rawTimeline = Array.isArray(source.explanations) ? source.explanations : (Array.isArray(source.timeline_meanings) ? source.timeline_meanings : []);
-
-    const timeline = rawTimeline
-      .map((item) => {
-        if (!item || typeof item !== 'object') return null;
-        
-        // Map from either new LRCHub spec or old spec
-        const startRaw = String(item.start_time || item.start || '').trim();
-        const endRaw = String(item.end_time || item.end || '').trim();
-        
-        const startSec = (typeof item.start_ms === 'number') ? item.start_ms / 1000 : parseMeaningTimeToSecLocal(item.start_sec ?? item.startSec ?? startRaw);
-        const endSec = (typeof item.end_ms === 'number') ? item.end_ms / 1000 : parseMeaningTimeToSecLocal(item.end_sec ?? item.endSec ?? endRaw);
-        const start = startRaw || formatMeaningTimeLocal(startSec);
-        const end = endRaw || formatMeaningTimeLocal(endSec);
-
-        return {
-          start,
-          end,
-          startSec,
-          endSec,
-          label: String(item.lyrics || item.label || item.text || '').trim(),
-          summary: String(item.summary || item.synopsis || '').trim(),
-          detail: String(item.meaning || item.detail || item.explanation || item.description || '').trim(),
-          emotion: normalizeMeaningStringListLocal(item.emotion || item.emotions || item.mood),
-          keywords: normalizeMeaningStringListLocal(item.keywords || item.keyword),
-        };
-      })
-      .filter(item => item && (item.label || item.summary || item.detail));
-
-    const songSummaryRaw = source.song_summary && typeof source.song_summary === 'object'
-      ? source.song_summary
-      : (source.songSummary && typeof source.songSummary === 'object' ? source.songSummary : {});
-    const finalSummaryRaw = source.final_summary && typeof source.final_summary === 'object'
-      ? source.final_summary
-      : {};
-    const synopsis = String(songSummaryRaw.synopsis || finalSummaryRaw.synopsis || '').trim();
-    const message = String(songSummaryRaw.message || finalSummaryRaw.message || '').trim();
-    const summaryText = String(songSummaryRaw.summary || finalSummaryRaw.summary || '').trim();
-    const longSummaryParts = [synopsis, message, summaryText].filter(Boolean);
-    const finalSummary = {
-      short: String(finalSummaryRaw.short || synopsis || message || summaryText || '').trim(),
-      long: String(finalSummaryRaw.long || longSummaryParts.join('\n\n') || finalSummaryRaw.short || '').trim(),
-    };
-    const comments = normalizeMeaningCommentsLocal(source.comments);
-    const rating = normalizeMeaningRatingLocal(source.rating);
-
-    if (!timeline.length && !finalSummary.short && !finalSummary.long && !comments.length && !rating) return null;
-
-    return {
-      title: String(source.display_name || source.title || source.track || '').trim(),
-      timeline_meanings: timeline,
-      final_summary: finalSummary,
-      song_summary: { synopsis, message, summary: summaryText },
-      comments,
-      rating,
-    };
-  };
-
-  const parseMeaningPayloadTextLocal = (text) => {
-    const raw = String(text || '').replace(/^\uFEFF/, '').trim();
-    if (!raw) return null;
-
-    const candidates = [raw];
-    const fenced = raw.match(/```(?:json|txt|text)?\s*([\s\S]*?)```/i);
-    if (fenced && fenced[1]) candidates.push(fenced[1].trim());
-    const firstBrace = raw.indexOf('{');
-    const lastBrace = raw.lastIndexOf('}');
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
-      candidates.push(raw.slice(firstBrace, lastBrace + 1).trim());
-    }
-
-    for (const candidate of candidates) {
-      if (!candidate) continue;
-      try {
-        const parsed = JSON.parse(candidate);
-        const normalized = normalizeMeaningPayloadLocal(parsed);
-        if (normalized) return normalized;
-      } catch (e) {
-      }
-    }
-
-    return null;
-  };
-
-  const getMeaningSegments = () => (
-    lyricsMeaning && Array.isArray(lyricsMeaning.timeline_meanings)
-      ? lyricsMeaning.timeline_meanings
-      : []
-  );
-
-  const getCurrentPlaybackTimeSec = () => {
-    const v = document.querySelector('video');
-    if (!v || typeof v.currentTime !== 'number' || Number.isNaN(v.currentTime)) return null;
-    let t = v.currentTime;
-    if (!(timeOffset > 0 && t < timeOffset)) {
-      t = Math.max(0, t - timeOffset);
-    }
-    const duration = Number.isFinite(v.duration) ? v.duration : null;
-    t = Math.max(0, t + (config.syncOffset / 1000));
-    if (typeof duration === 'number' && duration > 0) {
-      t = Math.min(t, duration);
-    }
-    return t;
-  };
-
-  const findMeaningIndexByTime = (timeSec) => {
-    const segments = getMeaningSegments();
-    if (!segments.length) return -1;
-    if (typeof timeSec !== 'number' || Number.isNaN(timeSec)) return 0;
-
-    let fallbackIndex = 0;
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      const startSec = typeof segment.startSec === 'number' ? segment.startSec : null;
-      const endSec = typeof segment.endSec === 'number' ? segment.endSec : null;
-
-      if (startSec != null && timeSec + 0.12 >= startSec) {
-        fallbackIndex = i;
-      }
-      if ((startSec == null || timeSec + 0.12 >= startSec) &&
-          (endSec == null || timeSec <= endSec + 0.12)) {
-        return i;
-      }
-      if (startSec != null && timeSec < startSec) {
-        break;
-      }
-    }
-
-    return fallbackIndex;
-  };
-
-  const resolveMeaningIndex = (preferredTime = null) => {
-    const segments = getMeaningSegments();
-    if (!segments.length) return -1;
-    if (typeof preferredTime === 'number' && !Number.isNaN(preferredTime)) {
-      return findMeaningIndexByTime(preferredTime);
-    }
-    if (lastActiveIndex >= 0 && lyricsData[lastActiveIndex] && typeof lyricsData[lastActiveIndex].time === 'number') {
-      return findMeaningIndexByTime(lyricsData[lastActiveIndex].time);
-    }
-    const now = getCurrentPlaybackTimeSec();
-    if (typeof now === 'number') return findMeaningIndexByTime(now);
-    return 0;
-  };
-
-  const buildMeaningChipGroup = (label, values, kind) => {
-    if (!Array.isArray(values) || !values.length) return '';
-    const chips = values.map((value) => `<span class="ytm-meaning-chip ${kind}">${escapeHtml(value)}</span>`).join('');
-    return `<div class="ytm-meaning-chip-group"><div class="ytm-meaning-chip-label">${escapeHtml(label)}</div><div class="ytm-meaning-chip-list">${chips}</div></div>`;
-  };
-
-  const buildMeaningRatingHtml = () => {
-    const rating = lyricsMeaning && lyricsMeaning.rating;
-    if (!rating) return '';
-    const average = typeof rating.average === 'number' ? rating.average.toFixed(1) : '--';
-    const count = typeof rating.count === 'number' ? `${rating.count}件` : '';
-    return `<div class="ytm-meaning-rating"><span>★ ${escapeHtml(average)}</span>${count ? `<span>${escapeHtml(count)}</span>` : ''}</div>`;
-  };
-
-  const buildMeaningSummarySectionsHtml = () => {
-    const summary = (lyricsMeaning && lyricsMeaning.song_summary) || {};
-    const sections = [
-      ['あらすじ', summary.synopsis],
-      ['メッセージ', summary.message],
-      ['まとめ', summary.summary],
-    ].filter(([, text]) => String(text || '').trim());
-
-    return sections.map(([label, text]) => `
+  return sections.map(([label, text]) => `
       <section class="ytm-meaning-summary-section">
         <div class="ytm-meaning-summary-section-label">${escapeHtml(label)}</div>
         <p>${escapeHtml(text)}</p>
       </section>
     `).join('');
-  };
+};
 
-  const buildMeaningCommentsHtml = () => {
-    const comments = lyricsMeaning && Array.isArray(lyricsMeaning.comments) ? lyricsMeaning.comments : [];
-    if (!comments.length) return '';
-    const items = comments.slice(0, 5).map((comment) => {
-      const meta = [comment.contributorName, comment.createdAt].filter(Boolean).join(' / ');
-      return `
+const buildMeaningCommentsHtml = () => {
+  const comments = lyricsMeaning && Array.isArray(lyricsMeaning.comments) ? lyricsMeaning.comments : [];
+  if (!comments.length) return '';
+  const items = comments.slice(0, 5).map((comment) => {
+    const meta = [comment.contributorName, comment.createdAt].filter(Boolean).join(' / ');
+    return `
         <div class="ytm-meaning-comment">
           <p>${escapeHtml(comment.body)}</p>
           ${meta ? `<div class="ytm-meaning-comment-meta">${escapeHtml(meta)}</div>` : ''}
         </div>
       `;
-    }).join('');
-    return `
+  }).join('');
+  return `
       <section class="ytm-meaning-comments">
         <div class="ytm-meaning-summary-section-label">コメント</div>
         ${items}
       </section>
     `;
-  };
+};
 
-  const getMeaningDisplayTitle = () => {
-    const raw = (lyricsMeaning && lyricsMeaning.title) || ui.title?.textContent || 'Song Meaning';
-    return String(raw || 'Song Meaning').trim();
-  };
+const getMeaningDisplayTitle = () => {
+  const raw = (lyricsMeaning && lyricsMeaning.title) || ui.title?.textContent || 'Song Meaning';
+  return String(raw || 'Song Meaning').trim();
+};
 
-  function hideMeaningSummaryPopup() {
-    if (ui.meaningSummaryBackdrop) ui.meaningSummaryBackdrop.classList.remove('visible');
-    if (ui.meaningSummaryDialog) ui.meaningSummaryDialog.classList.remove('visible');
-  }
+function hideMeaningSummaryPopup() {
+  if (ui.meaningSummaryBackdrop) ui.meaningSummaryBackdrop.classList.remove('visible');
+  if (ui.meaningSummaryDialog) ui.meaningSummaryDialog.classList.remove('visible');
+}
 
-  function ensureMeaningSummaryDialog() {
-    if (ui.meaningSummaryBackdrop && ui.meaningSummaryDialog) return;
+function ensureMeaningSummaryDialog() {
+  if (ui.meaningSummaryBackdrop && ui.meaningSummaryDialog) return;
 
-    const backdrop = createEl('div', 'ytm-meaning-summary-backdrop', 'ytm-meaning-summary-backdrop');
-    const dialog = createEl('div', 'ytm-meaning-summary-dialog', 'ytm-meaning-summary-dialog');
-    backdrop.appendChild(dialog);
-    backdrop.addEventListener('click', (ev) => {
-      if (ev.target === backdrop) hideMeaningSummaryPopup();
+  const backdrop = createEl('div', 'ytm-meaning-summary-backdrop', 'ytm-meaning-summary-backdrop');
+  const dialog = createEl('div', 'ytm-meaning-summary-dialog', 'ytm-meaning-summary-dialog');
+  backdrop.appendChild(dialog);
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop) hideMeaningSummaryPopup();
+  });
+  document.body.appendChild(backdrop);
+  ui.meaningSummaryBackdrop = backdrop;
+  ui.meaningSummaryDialog = dialog;
+
+  if (!meaningSummaryGlobalSetup) {
+    meaningSummaryGlobalSetup = true;
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') hideMeaningSummaryPopup();
     });
-    document.body.appendChild(backdrop);
-    ui.meaningSummaryBackdrop = backdrop;
-    ui.meaningSummaryDialog = dialog;
+  }
+}
 
-    if (!meaningSummaryGlobalSetup) {
-      meaningSummaryGlobalSetup = true;
-      document.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Escape') hideMeaningSummaryPopup();
-      });
-    }
+function renderMeaningPanel(index = null) {
+  if (!ui.meaningPanel) return;
+
+  const normalizedIndex = typeof index === 'number' ? index : resolveMeaningIndex();
+  const segments = getMeaningSegments();
+  const segment = normalizedIndex >= 0 ? segments[normalizedIndex] : null;
+  const summary = lyricsMeaning && lyricsMeaning.final_summary ? lyricsMeaning.final_summary : { short: '', long: '' };
+
+  if (!lyricsMeaning) {
+    ui.meaningPanel.innerHTML = '';
+    ui.meaningPanel.classList.remove('active');
+    activeMeaningIndex = -1;
+    return;
   }
 
-  function renderMeaningPanel(index = null) {
-    if (!ui.meaningPanel) return;
-
-    const normalizedIndex = typeof index === 'number' ? index : resolveMeaningIndex();
-    const segments = getMeaningSegments();
-    const segment = normalizedIndex >= 0 ? segments[normalizedIndex] : null;
-    const summary = lyricsMeaning && lyricsMeaning.final_summary ? lyricsMeaning.final_summary : { short: '', long: '' };
-
-    if (!lyricsMeaning) {
-      ui.meaningPanel.innerHTML = '';
-      ui.meaningPanel.classList.remove('active');
-      activeMeaningIndex = -1;
-      return;
-    }
-
-    if (!segment) {
-      const fallbackText = summary.long || summary.short || 'この曲の解説データはまだありません。';
-      ui.meaningPanel.innerHTML = `
+  if (!segment) {
+    const fallbackText = summary.long || summary.short || 'この曲の解説データはまだありません。';
+    ui.meaningPanel.innerHTML = `
         <div class="ytm-meaning-panel-head">
           <div>
             <div class="ytm-meaning-panel-eyebrow">解説</div>
@@ -1925,9 +1946,9 @@
           ${buildMeaningCommentsHtml()}
         </div>
       `;
-      activeMeaningIndex = -1;
-    } else {
-      ui.meaningPanel.innerHTML = `
+    activeMeaningIndex = -1;
+  } else {
+    ui.meaningPanel.innerHTML = `
         <div class="ytm-meaning-panel-head">
           <div>
             <div class="ytm-meaning-panel-eyebrow">解説</div>
@@ -1944,104 +1965,104 @@
           ${buildMeaningRatingHtml()}
         </div>
       `;
-      activeMeaningIndex = normalizedIndex;
-    }
-
-    const closeBtn = ui.meaningPanel.querySelector('.ytm-meaning-close-btn');
-    if (closeBtn) {
-      closeBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        toggleMeaningPanel(false);
-      };
-    }
+    activeMeaningIndex = normalizedIndex;
   }
 
-  function syncMeaningPanelToPlayback(force = false, preferredTime = null) {
-    if (!meaningPanelVisible || !ui.meaningPanel || !lyricsMeaning) return;
-    const nextIndex = resolveMeaningIndex(preferredTime);
-    if (!force && nextIndex === activeMeaningIndex) return;
-    renderMeaningPanel(nextIndex);
+  const closeBtn = ui.meaningPanel.querySelector('.ytm-meaning-close-btn');
+  if (closeBtn) {
+    closeBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      toggleMeaningPanel(false);
+    };
+  }
+}
+
+function syncMeaningPanelToPlayback(force = false, preferredTime = null) {
+  if (!meaningPanelVisible || !ui.meaningPanel || !lyricsMeaning) return;
+  const nextIndex = resolveMeaningIndex(preferredTime);
+  if (!force && nextIndex === activeMeaningIndex) return;
+  renderMeaningPanel(nextIndex);
+}
+
+function refreshMeaningUi() {
+  const hasMeaning = !!lyricsMeaning;
+
+  if (ui.meaningBtn) {
+    ui.meaningBtn.hidden = !hasMeaning;
+    ui.meaningBtn.classList.toggle('active', !!(hasMeaning && meaningPanelVisible));
+  }
+  if (ui.summaryBtn) {
+    ui.summaryBtn.hidden = !hasMeaning;
   }
 
-  function refreshMeaningUi() {
-    const hasMeaning = !!lyricsMeaning;
-
-    if (ui.meaningBtn) {
-      ui.meaningBtn.hidden = !hasMeaning;
-      ui.meaningBtn.classList.toggle('active', !!(hasMeaning && meaningPanelVisible));
-    }
-    if (ui.summaryBtn) {
-      ui.summaryBtn.hidden = !hasMeaning;
-    }
-
-    if (!hasMeaning) {
-      meaningPanelVisible = false;
-      activeMeaningIndex = -1;
-      if (ui.meaningPanel) {
-        ui.meaningPanel.classList.remove('active');
-        ui.meaningPanel.innerHTML = '';
-      }
-      hideMeaningSummaryPopup();
-      return;
-    }
-
-    if (ui.meaningPanel) {
-      ui.meaningPanel.classList.toggle('active', !!meaningPanelVisible);
-      if (meaningPanelVisible) renderMeaningPanel(resolveMeaningIndex());
-    }
-  }
-
-  function setLyricsMeaningData(data) {
-    lyricsMeaning = normalizeMeaningPayloadLocal(data);
+  if (!hasMeaning) {
+    meaningPanelVisible = false;
     activeMeaningIndex = -1;
-    refreshMeaningUi();
-  }
-
-  async function persistMeaningDataToCurrentCache() {
-    if (!currentKey || !lyricsMeaning) return;
-    const cached = await storage.get(currentKey);
-    if (cached === NO_LYRICS_SENTINEL) return;
-
-    const base = (cached && typeof cached === 'object')
-      ? cached
-      : ((typeof lastRawLyricsText === 'string' && lastRawLyricsText.trim()) ? { lyrics: lastRawLyricsText } : null);
-
-    if (!base) return;
-    await storage.set(currentKey, { ...base, meaningData: lyricsMeaning });
-  }
-
-
-  function toggleMeaningPanel(force) {
-    if (!lyricsMeaning) {
-      showToast('解説データがまだありません');
-      return;
-    }
-
-    meaningPanelVisible = typeof force === 'boolean' ? force : !meaningPanelVisible;
     if (ui.meaningPanel) {
-      ui.meaningPanel.classList.toggle('active', meaningPanelVisible);
+      ui.meaningPanel.classList.remove('active');
+      ui.meaningPanel.innerHTML = '';
     }
-    if (ui.meaningBtn) {
-      ui.meaningBtn.classList.toggle('active', meaningPanelVisible);
-    }
-    if (meaningPanelVisible) {
-      syncMeaningPanelToPlayback(true);
-    }
+    hideMeaningSummaryPopup();
+    return;
   }
 
-  function showMeaningSummaryPopup() {
-    if (!lyricsMeaning) {
-      showToast('要約データがまだありません');
-      return;
-    }
+  if (ui.meaningPanel) {
+    ui.meaningPanel.classList.toggle('active', !!meaningPanelVisible);
+    if (meaningPanelVisible) renderMeaningPanel(resolveMeaningIndex());
+  }
+}
 
-    ensureMeaningSummaryDialog();
-    const summary = lyricsMeaning.final_summary || {};
-    const shortText = summary.short || '';
-    const longText = summary.long || shortText || 'この曲の要約データはまだありません。';
-    const structuredSummaryHtml = buildMeaningSummarySectionsHtml();
+function setLyricsMeaningData(data) {
+  lyricsMeaning = normalizeMeaningPayloadLocal(data);
+  activeMeaningIndex = -1;
+  refreshMeaningUi();
+}
 
-    ui.meaningSummaryDialog.innerHTML = `
+async function persistMeaningDataToCurrentCache() {
+  if (!currentKey || !lyricsMeaning) return;
+  const cached = await storage.get(currentKey);
+  if (cached === NO_LYRICS_SENTINEL) return;
+
+  const base = (cached && typeof cached === 'object')
+    ? cached
+    : ((typeof lastRawLyricsText === 'string' && lastRawLyricsText.trim()) ? { lyrics: lastRawLyricsText } : null);
+
+  if (!base) return;
+  await storage.set(currentKey, { ...base, meaningData: lyricsMeaning });
+}
+
+
+function toggleMeaningPanel(force) {
+  if (!lyricsMeaning) {
+    showToast('解説データがまだありません');
+    return;
+  }
+
+  meaningPanelVisible = typeof force === 'boolean' ? force : !meaningPanelVisible;
+  if (ui.meaningPanel) {
+    ui.meaningPanel.classList.toggle('active', meaningPanelVisible);
+  }
+  if (ui.meaningBtn) {
+    ui.meaningBtn.classList.toggle('active', meaningPanelVisible);
+  }
+  if (meaningPanelVisible) {
+    syncMeaningPanelToPlayback(true);
+  }
+}
+
+function showMeaningSummaryPopup() {
+  if (!lyricsMeaning) {
+    showToast('要約データがまだありません');
+    return;
+  }
+
+  ensureMeaningSummaryDialog();
+  const summary = lyricsMeaning.final_summary || {};
+  const shortText = summary.short || '';
+  const longText = summary.long || shortText || 'この曲の要約データはまだありません。';
+  const structuredSummaryHtml = buildMeaningSummarySectionsHtml();
+
+  ui.meaningSummaryDialog.innerHTML = `
       <button class="ytm-meaning-summary-close" type="button" aria-label="Close">×</button>
       <div class="ytm-meaning-summary-eyebrow">要約</div>
       <div class="ytm-meaning-summary-title">${escapeHtml(getMeaningDisplayTitle())}</div>
@@ -2051,1064 +2072,1064 @@
       ${buildMeaningCommentsHtml()}
     `;
 
-    const closeBtn = ui.meaningSummaryDialog.querySelector('.ytm-meaning-summary-close');
-    if (closeBtn) closeBtn.onclick = () => hideMeaningSummaryPopup();
+  const closeBtn = ui.meaningSummaryDialog.querySelector('.ytm-meaning-summary-close');
+  if (closeBtn) closeBtn.onclick = () => hideMeaningSummaryPopup();
 
-    ui.meaningSummaryBackdrop.classList.add('visible');
-    ui.meaningSummaryDialog.classList.add('visible');
-  }
+  ui.meaningSummaryBackdrop.classList.add('visible');
+  ui.meaningSummaryDialog.classList.add('visible');
+}
 
-  function setupAutoHideEvents() {
-    if (document.body.dataset.autohideSetup) return;
-    ['mousemove', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, handleInteraction));
-    document.body.dataset.autohideSetup = 'true';
-    handleInteraction();
-  }
+function setupAutoHideEvents() {
+  if (document.body.dataset.autohideSetup) return;
+  ['mousemove', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, handleInteraction));
+  document.body.dataset.autohideSetup = 'true';
+  handleInteraction();
+}
 
-  function setupScrollResumeEvents() {
-    if (!ui.lyrics) return;
-    
-    const handleUserScroll = () => {
-      if (isProgrammaticScrolling) {
-        // プログラムスクロール中は、完了までタイムアウトを延長
-        clearTimeout(programmaticScrollTimeout);
-        programmaticScrollTimeout = setTimeout(() => {
-          isProgrammaticScrolling = false;
-        }, 150);
-        return;
-      }
-      
-      isUserScrolling = true;
-      clearTimeout(userScrollTimeout);
-      userScrollTimeout = setTimeout(() => {
-        isUserScrolling = false;
-        lastScrolledIndex = -1; // 復帰時に強制スクロールさせるためリセット
-      }, 3000);
-    };
+function setupScrollResumeEvents() {
+  if (!ui.lyrics) return;
 
-    ui.lyrics.addEventListener('scroll', handleUserScroll, { passive: true });
-  }
-  
-
-  // ===================== 歌詞＋翻訳適用 =====================
-
-  let lyricsTranslationMap = {};
-
-  const normalizeTranslationLangKey = (lang) => {
-    const key = String(lang || '').trim().toLowerCase();
-    if (key === 'jp') return 'ja';
-    if (key === 'kr') return 'ko';
-    if (key === 'cn' || key === 'zh-cn' || key === 'zh-tw') return 'zh';
-    return key;
-  };
-
-  const toLrchubTranslateLang = (lang) => {
-    const key = normalizeTranslationLangKey(lang);
-    if (!key || key === 'original') return '';
-    if (key === 'ja') return 'JA';
-    if (key === 'en') return 'EN';
-    if (key === 'ko') return 'KO';
-    if (key === 'zh') return 'CN';
-    return key.toUpperCase();
-  };
-
-  const extractTranslationLyricsLocal = (value) => {
-    if (typeof value === 'string') return value.trim();
-    if (!value || typeof value !== 'object') return '';
-
-    const fields = [
-      value.lyrics,
-      value.synced_lyrics,
-      value.syncedLyrics,
-      value.lrc,
-      value.plain_lyrics,
-      value.plainLyrics,
-      value.text
-    ];
-
-    for (const field of fields) {
-      if (typeof field === 'string' && field.trim()) return field.trim();
-    }
-    return '';
-  };
-
-  const normalizeTranslationsToLrcMapLocal = (input) => {
-    const out = {};
-    if (!input) return out;
-
-    if (input.lrc_map && typeof input.lrc_map === 'object') {
-      Object.entries(input.lrc_map).forEach(([lang, value]) => {
-        const key = normalizeTranslationLangKey(lang);
-        const lyrics = extractTranslationLyricsLocal(value);
-        if (key && lyrics) out[key] = lyrics;
-      });
-    }
-
-    if (Array.isArray(input)) {
-      input.forEach(item => {
-        if (!item) return;
-        const key = normalizeTranslationLangKey(item.language || item.lang || item.target_lang || item.targetLang);
-        const lyrics = extractTranslationLyricsLocal(item);
-        if (key && lyrics) out[key] = lyrics;
-      });
-      return out;
-    }
-
-    if (typeof input === 'object') {
-      Object.entries(input).forEach(([lang, value]) => {
-        if (lang === 'lrc_map') return;
-        const key = normalizeTranslationLangKey(value?.language || value?.lang || lang);
-        const lyrics = extractTranslationLyricsLocal(value);
-        if (key && lyrics) out[key] = lyrics;
-      });
-    }
-
-    return out;
-  };
-
-  const getRequestedTranslationLangs = () => {
-    if (!config.useTrans) return [];
-    const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
-    const subLang = normalizeTranslationLangKey(config.subLang || '');
-    const langs = [];
-    if (mainLang && mainLang !== 'original') langs.push(mainLang);
-    if (subLang && subLang !== 'original' && subLang !== mainLang) langs.push(subLang);
-    return [...new Set(langs.filter(Boolean))];
-  };
-
-  const getRequestedLrchubTranslateLangs = () => (
-    getRequestedTranslationLangs().map(toLrchubTranslateLang).filter(Boolean)
-  );
-
-  async function applyTranslations(baseLines, youtubeUrl) {
-    if (!config.useTrans || !Array.isArray(baseLines) || !baseLines.length) return baseLines;
-    const mainLangStored = await storage.get('ytm_main_lang');
-    const subLangStored = await storage.get('ytm_sub_lang');
-    if (mainLangStored) config.mainLang = mainLangStored;
-    if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
-    const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
-    const subLang = normalizeTranslationLangKey(config.subLang || '');
-    const langsToFetch = getRequestedTranslationLangs();
-    if (!langsToFetch.length) return baseLines;
-
-    let lrcMap = { ...(lyricsTranslationMap || {}) };
-    try {
-      const missingLangs = langsToFetch.filter(lang => !lrcMap[normalizeTranslationLangKey(lang)]);
-      if (missingLangs.length) {
-        const metaNow = getMetadata();
-        const track = metaNow?.title ? metaNow.title.replace(/\s*[\(-\[].*?[\)-]].*/, '') : '';
-        const artist = metaNow?.artist || '';
-        const res = await new Promise(resolve => {
-          chrome.runtime.sendMessage({
-            type: 'GET_TRANSLATION',
-            payload: {
-              track,
-              artist,
-              youtube_url: youtubeUrl,
-              video_id: getCurrentVideoId(),
-              langs: missingLangs
-            }
-          }, resolve);
-        });
-        if (res?.success) {
-          lrcMap = {
-            ...lrcMap,
-            ...normalizeTranslationsToLrcMapLocal(res.lrcMap),
-            ...normalizeTranslationsToLrcMapLocal(res.translations)
-          };
-        }
-      }
-      lyricsTranslationMap = { ...(lyricsTranslationMap || {}), ...lrcMap };
-    } catch (e) {
-      console.warn('GET_TRANSLATION failed', e);
-    }
-
-    const transLinesByLang = {};
-    const needDeepL = [];
-
-    langsToFetch.forEach(lang => {
-      const langKey = normalizeTranslationLangKey(lang);
-      const lrc = (lrcMap && lrcMap[langKey]) || '';
-      if (lrc) {
-        const parsed = parseLRCNoFlag(lrc);
-        transLinesByLang[langKey] = parsed;
-      } else {
-        needDeepL.push(langKey);
-      }
-    });
-
-    if (needDeepL.length &&  (config.deepLKey || (config.useSharedTranslateApi)) ) {
-      for (const lang of needDeepL) {
-        const translatedTexts = await translateTo(baseLines, lang);
-        if (translatedTexts && translatedTexts.length === baseLines.length) {
-          const lines = baseLines.map((l, i) => ({
-            time: l.time,
-            text: translatedTexts[i]
-          }));
-          transLinesByLang[lang] = lines;
-          const plain = translatedTexts.join('\n');
-          if (plain.trim()) {
-            chrome.runtime.sendMessage({
-              type: 'REGISTER_TRANSLATION',
-              payload: { youtube_url: youtubeUrl, lang, lyrics: plain }
-            }, (res) => {
-              console.log('[CS] REGISTER_TRANSLATION', lang, res);
-            });
-          }
-        }
-      }
-    }
-
-    const alignedMap = buildAlignedTranslations(baseLines, transLinesByLang);
-    const final = baseLines.map(l => ({ ...l }));
-    const getLangTextAt = (langCode, index, baseText) => {
-      if (!langCode || langCode === 'original') return baseText;
-      const arr = alignedMap[langCode];
-      if (!arr) return baseText;
-      const v = arr[index];
-      return (v === null || v === undefined) ? baseText : v;
-    };
-
-    for (let i = 0; i < final.length; i++) {
-      const baseText = final[i].text;
-      let primary = getLangTextAt(mainLang, i, baseText);
-      let secondary = null;
-      if (subLang && subLang !== mainLang) {
-        secondary = getLangTextAt(subLang, i, baseText);
-      } else if (!subLang && mainLang !== 'original') {
-        if (normalizeStr(primary) !== normalizeStr(baseText)) {
-          secondary = baseText;
-        }
-      }
-      if (secondary && normalizeStr(primary) === normalizeStr(secondary)) {
-        if (!isMixedLang(baseText)) secondary = null;
-      }
-      final[i].text = primary;
-      if (secondary) final[i].translation = secondary;
-      else delete final[i].translation;
-    }
-    dedupePrimarySecondary(final);
-    return final;
-  }
-
-  const buildAlignedTranslations = (baseLines, transLinesByLang) => {
-    const alignedMap = {};
-    const TOL = 0.15;
-    Object.keys(transLinesByLang).forEach(lang => {
-      const arr = transLinesByLang[lang];
-      const res = new Array(baseLines.length).fill(null);
-      if (!Array.isArray(arr) || !arr.length) {
-        alignedMap[lang] = res;
-        return;
-      }
-      const hasAnyTime = arr.some(x => x && typeof x.time === 'number');
-      if (!hasAnyTime) {
-        // タイムスタンプ無しの翻訳は「空行を消費しない」方式で合わせる
-        let k = 0;
-        for (let i = 0; i < baseLines.length; i++) {
-          const baseTextRaw = (baseLines[i]?.text ?? '');
-          const isEmptyBaseLine = typeof baseTextRaw === 'string' && baseTextRaw.trim() === '';
-          if (isEmptyBaseLine) { res[i] = ''; continue; }
-          const cand = arr[k];
-          if (cand && typeof cand.text === 'string') {
-            const trimmed = cand.text.trim();
-            res[i] = trimmed === '' ? '' : trimmed;
-          } else {
-            res[i] = '';
-          }
-          k++;
-        }
-        alignedMap[lang] = res;
-        return;
-      }
-      let j = 0;
-      for (let i = 0; i < baseLines.length; i++) {
-        const baseLine = baseLines[i] || {};
-        const tBase = baseLine.time;
-        const baseTextRaw = (baseLine.text ?? '');
-        const isEmptyBaseLine = typeof baseTextRaw === 'string' && baseTextRaw.trim() === '';
-        if (isEmptyBaseLine) {
-          res[i] = '';
-          continue;
-        }
-        if (typeof tBase !== 'number') {
-          const cand = arr[i];
-          if (cand && typeof cand.text === 'string') {
-            const raw = cand.text;
-            const trimmed = raw.trim();
-            res[i] = trimmed === '' ? '' : trimmed;
-          }
-          continue;
-        }
-        while (j < arr.length && typeof arr[j].time === 'number' && arr[j].time < tBase - TOL) {
-          j++;
-        }
-        if (j < arr.length && typeof arr[j].time === 'number' && Math.abs(arr[j].time - tBase) <= TOL) {
-          const raw = (arr[j].text ?? '');
-          const trimmed = raw.trim();
-          res[i] = trimmed === '' ? '' : trimmed;
-          j++;
-        }
-      }
-      alignedMap[lang] = res;
-    });
-    return alignedMap;
-  };
-
-  
-  // ===================== Dynamic line post-processing =====================
-  // Some providers return Dynamic lyrics in "word chunks" (e.g. each char item is a whole word).
-  // We normalize them into true character-level timings by distributing each chunk's duration
-  // across its characters (1 char at a time).
-  function normalizeDynamicLinesToCharLevel(dynLines) {
-    if (!Array.isArray(dynLines) || dynLines.length === 0) return dynLines;
-
-    const toMs = (v) => {
-      if (typeof v === 'number' && Number.isFinite(v)) return v;
-      if (typeof v === 'string') {
-        const n = Number(v);
-        if (Number.isFinite(n)) return n;
-      }
-      return null;
-    };
-
-    const getLineStartMs = (line) => {
-      if (!line) return null;
-      return toMs(line.startTimeMs) ?? toMs(line.time) ?? null;
-    };
-
-    const getCharStartMs = (ch) => {
-      if (!ch) return null;
-      return toMs(ch.t) ?? toMs(ch.time) ?? toMs(ch.startTimeMs) ?? null;
-    };
-
-    const isWordChunk = (s) => {
-      if (typeof s !== 'string') return false;
-      // Use Array.from to be Unicode-safe (emoji etc.)
-      return Array.from(s).length > 1;
-    };
-
-    const expandChunk = (chunkText, startMs, endMs) => {
-      const arr = Array.from(String(chunkText ?? ''));
-      const n = arr.length;
-      if (!n) return [];
-      const s = (typeof startMs === 'number' && Number.isFinite(startMs)) ? startMs : null;
-      const e = (typeof endMs === 'number' && Number.isFinite(endMs)) ? endMs : null;
-
-      // If we can't determine timing, emit all at 0 (will appear immediately when line becomes active)
-      if (s == null) return arr.map(c => ({ t: 0, c }));
-
-      if (e == null || e <= s) return arr.map(c => ({ t: s, c }));
-
-      const dur = Math.max(1, e - s);
-      const step = dur / n;
-      const out = [];
-      for (let i = 0; i < n; i++) {
-        out.push({ t: s + Math.floor(step * i), c: arr[i] });
-      }
-      return out;
-    };
-
-    for (let li = 0; li < dynLines.length; li++) {
-      const line = dynLines[li];
-      if (!line || !Array.isArray(line.chars) || line.chars.length === 0) continue;
-
-      // detect if any "char" item is actually a multi-character chunk (word)
-      const hasChunk = line.chars.some(ch => isWordChunk(ch?.c));
-      if (!hasChunk) continue;
-
-      const nextLineStartMs = (li + 1 < dynLines.length) ? getLineStartMs(dynLines[li + 1]) : null;
-      const lineStartMs = getLineStartMs(line) ?? getCharStartMs(line.chars[0]) ?? 0;
-
-      // Build expanded character list
-      const expanded = [];
-      for (let i = 0; i < line.chars.length; i++) {
-        const seg = line.chars[i];
-        const segText = (seg && typeof seg.c === 'string') ? seg.c : '';
-        const segStart = getCharStartMs(seg) ?? lineStartMs;
-
-        // End bound is next segment's start, else next line, else a small fallback window
-        let segEnd = (i + 1 < line.chars.length) ? getCharStartMs(line.chars[i + 1]) : null;
-        if (segEnd == null) segEnd = toMs(line.endTimeMs) ?? nextLineStartMs ?? (segStart + 1500);
-        if (typeof segEnd === 'number' && segEnd <= segStart) segEnd = segStart + 200;
-
-        // Even if segText is already single "character", keep it as-is
-        const segArr = Array.from(String(segText));
-        if (segArr.length <= 1) {
-          if (segArr.length === 1) expanded.push({ t: segStart, c: segArr[0] });
-          continue;
-        }
-
-        expanded.push(...expandChunk(segText, segStart, segEnd));
-      }
-
-      // Replace with normalized chars
-      line.chars = expanded;
-      // Update line text if missing or mismatched
-      try {
-        const rebuilt = expanded.map(x => x.c).join('');
-        if (typeof line.text !== 'string' || line.text.length === 0) line.text = rebuilt;
-      } catch (e) { }
-
-      // Ensure startTimeMs exists
-      if (typeof line.startTimeMs !== 'number' || !Number.isFinite(line.startTimeMs)) {
-        const firstT = expanded.length ? expanded[0].t : lineStartMs;
-        line.startTimeMs = firstT;
-      }
-    }
-
-    return dynLines;
-  }
-
-async function applyLyricsText(rawLyrics) {
-    const keyAtStart = currentKey;
-    if (!rawLyrics || typeof rawLyrics !== 'string' || !rawLyrics.trim()) {
-      if (keyAtStart !== currentKey) return;
-      lyricsData = [];
-      hasTimestamp = false;
-      animatedCaptionData = null;
-      renderLyrics([]);
-      refreshMeaningUi();
+  const handleUserScroll = () => {
+    if (isProgrammaticScrolling) {
+      // プログラムスクロール中は、完了までタイムアウトを延長
+      clearTimeout(programmaticScrollTimeout);
+      programmaticScrollTimeout = setTimeout(() => {
+        isProgrammaticScrolling = false;
+      }, 150);
       return;
     }
-    lastRawLyricsText = rawLyrics;
-    const timedTextData = parseTimedTextAnimation(rawLyrics);
-    let parsed = null;
-    if (timedTextData) {
-      if (config.useAnimatedCaptions) {
-        lyricsData = timedTextData.plainLines || [];
-        dynamicLines = null;
-        duetSubDynamicLines = null;
-        renderAnimatedTimedText(timedTextData);
-        refreshMeaningUi();
-        if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
-        return;
-      }
-      animatedCaptionData = null;
-      hasTimestamp = true;
-      parsed = timedTextData.plainLines || [];
-    } else {
-      animatedCaptionData = null;
-      parsed = parseBaseLRC(rawLyrics);
-    }
-    const videoUrl = getCurrentVideoUrl();
 
-    // duet: if sub.txt exists, hide (filter) the normal lines that match sub timestamps,
-    // and render the sub lines on the right.
-    let baseLines = parsed;
-    let hasDuetSub = false;
-    
-    // デュエットモードのリセット（sub.txtがない場合は除外タイムスタンプもクリア）
-    _duetExcludedTimes = new Set();
-    
-    if (typeof duetSubLyricsRaw === 'string' && duetSubLyricsRaw.trim()) {
-      const subObj = parseSubLRC(duetSubLyricsRaw);
-      const subLines = subObj.lines || [];
-      hasDuetSub = !!subObj.hasTs && subLines.some(l => typeof l?.time === 'number');
-      if (hasDuetSub) {
-        // even if the main lyrics didn't have tags, duet sub implies timestamp mode
-        hasTimestamp = true;
-        baseLines = mergeDuetLinesWithSimultaneousSupport(parsed, subLines);
-      }
-    }
-    document.body.classList.toggle('ytm-duet-mode', hasDuetSub);
+    isUserScrolling = true;
+    clearTimeout(userScrollTimeout);
+    userScrollTimeout = setTimeout(() => {
+      isUserScrolling = false;
+      lastScrolledIndex = -1; // 復帰時に強制スクロールさせるためリセット
+    }, 3000);
+  };
 
-    let finalLines = baseLines;
-    if (config.useTrans) {
-      const translated = await applyTranslations(baseLines, videoUrl);
-      // applyTranslations rebuilds objects, so re-attach duetSide by index
-      if (Array.isArray(translated) && Array.isArray(baseLines) && translated.length === baseLines.length) {
-        finalLines = translated.map((l, i) => ({ ...l, duetSide: baseLines[i]?.duetSide }));
-      } else {
-        finalLines = translated;
-      }
-    }
-    if (keyAtStart !== currentKey) return;
+  ui.lyrics.addEventListener('scroll', handleUserScroll, { passive: true });
+}
 
-    finalLines = collapseCrossSideDuplicateLyrics(finalLines);
 
-    // Normalize Dynamic lyrics: expand "word chunks" into character-level timings
-    try {
-      if (Array.isArray(dynamicLines) && dynamicLines.length) {
-        dynamicLines = normalizeDynamicLinesToCharLevel(dynamicLines);
-      }
-    } catch (e) { }
+// ===================== 歌詞＋翻訳適用 =====================
 
-    lyricsData = finalLines;
-    renderLyrics(finalLines);
-    refreshMeaningUi();
-    if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
+let lyricsTranslationMap = {};
+
+const normalizeTranslationLangKey = (lang) => {
+  const key = String(lang || '').trim().toLowerCase();
+  if (key === 'jp') return 'ja';
+  if (key === 'kr') return 'ko';
+  if (key === 'cn' || key === 'zh-cn' || key === 'zh-tw') return 'zh';
+  return key;
+};
+
+const toLrchubTranslateLang = (lang) => {
+  const key = normalizeTranslationLangKey(lang);
+  if (!key || key === 'original') return '';
+  if (key === 'ja') return 'JA';
+  if (key === 'en') return 'EN';
+  if (key === 'ko') return 'KO';
+  if (key === 'zh') return 'CN';
+  return key.toUpperCase();
+};
+
+const extractTranslationLyricsLocal = (value) => {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object') return '';
+
+  const fields = [
+    value.lyrics,
+    value.synced_lyrics,
+    value.syncedLyrics,
+    value.lrc,
+    value.plain_lyrics,
+    value.plainLyrics,
+    value.text
+  ];
+
+  for (const field of fields) {
+    if (typeof field === 'string' && field.trim()) return field.trim();
+  }
+  return '';
+};
+
+const normalizeTranslationsToLrcMapLocal = (input) => {
+  const out = {};
+  if (!input) return out;
+
+  if (input.lrc_map && typeof input.lrc_map === 'object') {
+    Object.entries(input.lrc_map).forEach(([lang, value]) => {
+      const key = normalizeTranslationLangKey(lang);
+      const lyrics = extractTranslationLyricsLocal(value);
+      if (key && lyrics) out[key] = lyrics;
+    });
   }
 
-  // ===================== 歌詞候補・ロック関連 =====================
-
-  const getCandidateId = (cand, idx = 0) => {
-    if (!cand || typeof cand !== 'object') return String(idx);
-    return String(cand.id || cand.candidate_id || cand.path || cand.file || cand.filename || cand.name || cand.title || idx);
-  };
-
-  const buildCandidateLabel = (cand, idx = 0) => {
-    if (!cand || typeof cand !== 'object') return `候補${idx + 1}`;
-
-    const rawName = (
-      cand.file ||
-      cand.filename ||
-      cand.name ||
-      cand.path ||
-      cand.select ||
-      cand.list ||
-      cand.candidate_id ||
-      cand.id ||
-      ''
-    );
-
-    const normalized = String(rawName || '').trim().replace(/\\/g, '/');
-    const labelText = normalized ? normalized.split('/').pop() : `候補${idx + 1}`;
-    return labelText;
-  };
-
-  const safeRuntimeSendMessage = (message) => {
-    return new Promise((resolve) => {
-      try {
-        if (!EXT || !EXT.runtime || typeof EXT.runtime.sendMessage !== 'function') {
-          resolve(null);
-          return;
-        }
-        EXT.runtime.sendMessage(message, (resp) => {
-          const err = EXT.runtime && EXT.runtime.lastError ? EXT.runtime.lastError : null;
-          if (err) {
-            console.warn('[CS] runtime.sendMessage failed:', err.message || err);
-            resolve({ success: false, error: err.message || String(err) });
-            return;
-          }
-          resolve(resp || null);
-        });
-      } catch (e) {
-        console.warn('[CS] runtime.sendMessage exception:', e);
-        resolve({ success: false, error: String(e) });
-      }
+  if (Array.isArray(input)) {
+    input.forEach(item => {
+      if (!item) return;
+      const key = normalizeTranslationLangKey(item.language || item.lang || item.target_lang || item.targetLang);
+      const lyrics = extractTranslationLyricsLocal(item);
+      if (key && lyrics) out[key] = lyrics;
     });
+    return out;
+  }
+
+  if (typeof input === 'object') {
+    Object.entries(input).forEach(([lang, value]) => {
+      if (lang === 'lrc_map') return;
+      const key = normalizeTranslationLangKey(value?.language || value?.lang || lang);
+      const lyrics = extractTranslationLyricsLocal(value);
+      if (key && lyrics) out[key] = lyrics;
+    });
+  }
+
+  return out;
+};
+
+const getRequestedTranslationLangs = () => {
+  if (!config.useTrans) return [];
+  const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
+  const subLang = normalizeTranslationLangKey(config.subLang || '');
+  const langs = [];
+  if (mainLang && mainLang !== 'original') langs.push(mainLang);
+  if (subLang && subLang !== 'original' && subLang !== mainLang) langs.push(subLang);
+  return [...new Set(langs.filter(Boolean))];
+};
+
+const getRequestedLrchubTranslateLangs = () => (
+  getRequestedTranslationLangs().map(toLrchubTranslateLang).filter(Boolean)
+);
+
+async function applyTranslations(baseLines, youtubeUrl) {
+  if (!config.useTrans || !Array.isArray(baseLines) || !baseLines.length) return baseLines;
+  const mainLangStored = await storage.get('ytm_main_lang');
+  const subLangStored = await storage.get('ytm_sub_lang');
+  if (mainLangStored) config.mainLang = mainLangStored;
+  if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
+  const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
+  const subLang = normalizeTranslationLangKey(config.subLang || '');
+  const langsToFetch = getRequestedTranslationLangs();
+  if (!langsToFetch.length) return baseLines;
+
+  let lrcMap = { ...(lyricsTranslationMap || {}) };
+  try {
+    const missingLangs = langsToFetch.filter(lang => !lrcMap[normalizeTranslationLangKey(lang)]);
+    if (missingLangs.length) {
+      const metaNow = getMetadata();
+      const track = metaNow?.title ? metaNow.title.replace(/\s*[\(-\[].*?[\)-]].*/, '') : '';
+      const artist = metaNow?.artist || '';
+      const res = await new Promise(resolve => {
+        chrome.runtime.sendMessage({
+          type: 'GET_TRANSLATION',
+          payload: {
+            track,
+            artist,
+            youtube_url: youtubeUrl,
+            video_id: getCurrentVideoId(),
+            langs: missingLangs
+          }
+        }, resolve);
+      });
+      if (res?.success) {
+        lrcMap = {
+          ...lrcMap,
+          ...normalizeTranslationsToLrcMapLocal(res.lrcMap),
+          ...normalizeTranslationsToLrcMapLocal(res.translations)
+        };
+      }
+    }
+    lyricsTranslationMap = { ...(lyricsTranslationMap || {}), ...lrcMap };
+  } catch (e) {
+    console.warn('GET_TRANSLATION failed', e);
+  }
+
+  const transLinesByLang = {};
+  const needDeepL = [];
+
+  langsToFetch.forEach(lang => {
+    const langKey = normalizeTranslationLangKey(lang);
+    const lrc = (lrcMap && lrcMap[langKey]) || '';
+    if (lrc) {
+      const parsed = parseLRCNoFlag(lrc);
+      transLinesByLang[langKey] = parsed;
+    } else {
+      needDeepL.push(langKey);
+    }
+  });
+
+  if (needDeepL.length && (config.deepLKey || (config.useSharedTranslateApi))) {
+    for (const lang of needDeepL) {
+      const translatedTexts = await translateTo(baseLines, lang);
+      if (translatedTexts && translatedTexts.length === baseLines.length) {
+        const lines = baseLines.map((l, i) => ({
+          time: l.time,
+          text: translatedTexts[i]
+        }));
+        transLinesByLang[lang] = lines;
+        const plain = translatedTexts.join('\n');
+        if (plain.trim()) {
+          chrome.runtime.sendMessage({
+            type: 'REGISTER_TRANSLATION',
+            payload: { youtube_url: youtubeUrl, lang, lyrics: plain }
+          }, (res) => {
+            console.log('[CS] REGISTER_TRANSLATION', lang, res);
+          });
+        }
+      }
+    }
+  }
+
+  const alignedMap = buildAlignedTranslations(baseLines, transLinesByLang);
+  const final = baseLines.map(l => ({ ...l }));
+  const getLangTextAt = (langCode, index, baseText) => {
+    if (!langCode || langCode === 'original') return baseText;
+    const arr = alignedMap[langCode];
+    if (!arr) return baseText;
+    const v = arr[index];
+    return (v === null || v === undefined) ? baseText : v;
   };
 
-  const formatPreviewTime = (seconds) => {
-    if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return '--:--';
-    const total = Math.max(0, Math.floor(seconds));
-    const mm = Math.floor(total / 60);
-    const ss = total % 60;
-    return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-  };
+  for (let i = 0; i < final.length; i++) {
+    const baseText = final[i].text;
+    let primary = getLangTextAt(mainLang, i, baseText);
+    let secondary = null;
+    if (subLang && subLang !== mainLang) {
+      secondary = getLangTextAt(subLang, i, baseText);
+    } else if (!subLang && mainLang !== 'original') {
+      if (normalizeStr(primary) !== normalizeStr(baseText)) {
+        secondary = baseText;
+      }
+    }
+    if (secondary && normalizeStr(primary) === normalizeStr(secondary)) {
+      if (!isMixedLang(baseText)) secondary = null;
+    }
+    final[i].text = primary;
+    if (secondary) final[i].translation = secondary;
+    else delete final[i].translation;
+  }
+  dedupePrimarySecondary(final);
+  return final;
+}
 
-  const getCurrentPlaybackSeconds = () => {
-    try {
-      const v = document.querySelector('video');
-      if (v && Number.isFinite(v.currentTime)) return v.currentTime;
-    } catch (e) { }
+const buildAlignedTranslations = (baseLines, transLinesByLang) => {
+  const alignedMap = {};
+  const TOL = 0.15;
+  Object.keys(transLinesByLang).forEach(lang => {
+    const arr = transLinesByLang[lang];
+    const res = new Array(baseLines.length).fill(null);
+    if (!Array.isArray(arr) || !arr.length) {
+      alignedMap[lang] = res;
+      return;
+    }
+    const hasAnyTime = arr.some(x => x && typeof x.time === 'number');
+    if (!hasAnyTime) {
+      // タイムスタンプ無しの翻訳は「空行を消費しない」方式で合わせる
+      let k = 0;
+      for (let i = 0; i < baseLines.length; i++) {
+        const baseTextRaw = (baseLines[i]?.text ?? '');
+        const isEmptyBaseLine = typeof baseTextRaw === 'string' && baseTextRaw.trim() === '';
+        if (isEmptyBaseLine) { res[i] = ''; continue; }
+        const cand = arr[k];
+        if (cand && typeof cand.text === 'string') {
+          const trimmed = cand.text.trim();
+          res[i] = trimmed === '' ? '' : trimmed;
+        } else {
+          res[i] = '';
+        }
+        k++;
+      }
+      alignedMap[lang] = res;
+      return;
+    }
+    let j = 0;
+    for (let i = 0; i < baseLines.length; i++) {
+      const baseLine = baseLines[i] || {};
+      const tBase = baseLine.time;
+      const baseTextRaw = (baseLine.text ?? '');
+      const isEmptyBaseLine = typeof baseTextRaw === 'string' && baseTextRaw.trim() === '';
+      if (isEmptyBaseLine) {
+        res[i] = '';
+        continue;
+      }
+      if (typeof tBase !== 'number') {
+        const cand = arr[i];
+        if (cand && typeof cand.text === 'string') {
+          const raw = cand.text;
+          const trimmed = raw.trim();
+          res[i] = trimmed === '' ? '' : trimmed;
+        }
+        continue;
+      }
+      while (j < arr.length && typeof arr[j].time === 'number' && arr[j].time < tBase - TOL) {
+        j++;
+      }
+      if (j < arr.length && typeof arr[j].time === 'number' && Math.abs(arr[j].time - tBase) <= TOL) {
+        const raw = (arr[j].text ?? '');
+        const trimmed = raw.trim();
+        res[i] = trimmed === '' ? '' : trimmed;
+        j++;
+      }
+    }
+    alignedMap[lang] = res;
+  });
+  return alignedMap;
+};
+
+
+// ===================== Dynamic line post-processing =====================
+// Some providers return Dynamic lyrics in "word chunks" (e.g. each char item is a whole word).
+// We normalize them into true character-level timings by distributing each chunk's duration
+// across its characters (1 char at a time).
+function normalizeDynamicLinesToCharLevel(dynLines) {
+  if (!Array.isArray(dynLines) || dynLines.length === 0) return dynLines;
+
+  const toMs = (v) => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string') {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
     return null;
   };
 
-  const getCurrentRenderedLyricText = () => {
-    if (lastActiveIndex >= 0 && Array.isArray(lyricsData) && lyricsData[lastActiveIndex]) {
-      const line = lyricsData[lastActiveIndex];
-      const txt = String(line.text || line.rawLine || '').trim();
-      if (txt) return txt;
+  const getLineStartMs = (line) => {
+    if (!line) return null;
+    return toMs(line.startTimeMs) ?? toMs(line.time) ?? null;
+  };
+
+  const getCharStartMs = (ch) => {
+    if (!ch) return null;
+    return toMs(ch.t) ?? toMs(ch.time) ?? toMs(ch.startTimeMs) ?? null;
+  };
+
+  const isWordChunk = (s) => {
+    if (typeof s !== 'string') return false;
+    // Use Array.from to be Unicode-safe (emoji etc.)
+    return Array.from(s).length > 1;
+  };
+
+  const expandChunk = (chunkText, startMs, endMs) => {
+    const arr = Array.from(String(chunkText ?? ''));
+    const n = arr.length;
+    if (!n) return [];
+    const s = (typeof startMs === 'number' && Number.isFinite(startMs)) ? startMs : null;
+    const e = (typeof endMs === 'number' && Number.isFinite(endMs)) ? endMs : null;
+
+    // If we can't determine timing, emit all at 0 (will appear immediately when line becomes active)
+    if (s == null) return arr.map(c => ({ t: 0, c }));
+
+    if (e == null || e <= s) return arr.map(c => ({ t: s, c }));
+
+    const dur = Math.max(1, e - s);
+    const step = dur / n;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      out.push({ t: s + Math.floor(step * i), c: arr[i] });
     }
+    return out;
+  };
+
+  for (let li = 0; li < dynLines.length; li++) {
+    const line = dynLines[li];
+    if (!line || !Array.isArray(line.chars) || line.chars.length === 0) continue;
+
+    // detect if any "char" item is actually a multi-character chunk (word)
+    const hasChunk = line.chars.some(ch => isWordChunk(ch?.c));
+    if (!hasChunk) continue;
+
+    const nextLineStartMs = (li + 1 < dynLines.length) ? getLineStartMs(dynLines[li + 1]) : null;
+    const lineStartMs = getLineStartMs(line) ?? getCharStartMs(line.chars[0]) ?? 0;
+
+    // Build expanded character list
+    const expanded = [];
+    for (let i = 0; i < line.chars.length; i++) {
+      const seg = line.chars[i];
+      const segText = (seg && typeof seg.c === 'string') ? seg.c : '';
+      const segStart = getCharStartMs(seg) ?? lineStartMs;
+
+      // End bound is next segment's start, else next line, else a small fallback window
+      let segEnd = (i + 1 < line.chars.length) ? getCharStartMs(line.chars[i + 1]) : null;
+      if (segEnd == null) segEnd = toMs(line.endTimeMs) ?? nextLineStartMs ?? (segStart + 1500);
+      if (typeof segEnd === 'number' && segEnd <= segStart) segEnd = segStart + 200;
+
+      // Even if segText is already single "character", keep it as-is
+      const segArr = Array.from(String(segText));
+      if (segArr.length <= 1) {
+        if (segArr.length === 1) expanded.push({ t: segStart, c: segArr[0] });
+        continue;
+      }
+
+      expanded.push(...expandChunk(segText, segStart, segEnd));
+    }
+
+    // Replace with normalized chars
+    line.chars = expanded;
+    // Update line text if missing or mismatched
     try {
-      const activeRow = ui.lyrics ? ui.lyrics.querySelector('.lyric-line.active .lyric-main, .lyric-line.active') : null;
-      return activeRow && activeRow.textContent ? activeRow.textContent.trim() : '';
+      const rebuilt = expanded.map(x => x.c).join('');
+      if (typeof line.text !== 'string' || line.text.length === 0) line.text = rebuilt;
+    } catch (e) { }
+
+    // Ensure startTimeMs exists
+    if (typeof line.startTimeMs !== 'number' || !Number.isFinite(line.startTimeMs)) {
+      const firstT = expanded.length ? expanded[0].t : lineStartMs;
+      line.startTimeMs = firstT;
+    }
+  }
+
+  return dynLines;
+}
+
+async function applyLyricsText(rawLyrics) {
+  const keyAtStart = currentKey;
+  if (!rawLyrics || typeof rawLyrics !== 'string' || !rawLyrics.trim()) {
+    if (keyAtStart !== currentKey) return;
+    lyricsData = [];
+    hasTimestamp = false;
+    animatedCaptionData = null;
+    renderLyrics([]);
+    refreshMeaningUi();
+    return;
+  }
+  lastRawLyricsText = rawLyrics;
+  const timedTextData = parseTimedTextAnimation(rawLyrics);
+  let parsed = null;
+  if (timedTextData) {
+    if (config.useAnimatedCaptions) {
+      lyricsData = timedTextData.plainLines || [];
+      dynamicLines = null;
+      duetSubDynamicLines = null;
+      renderAnimatedTimedText(timedTextData);
+      refreshMeaningUi();
+      if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
+      return;
+    }
+    animatedCaptionData = null;
+    hasTimestamp = true;
+    parsed = timedTextData.plainLines || [];
+  } else {
+    animatedCaptionData = null;
+    parsed = parseBaseLRC(rawLyrics);
+  }
+  const videoUrl = getCurrentVideoUrl();
+
+  // duet: if sub.txt exists, hide (filter) the normal lines that match sub timestamps,
+  // and render the sub lines on the right.
+  let baseLines = parsed;
+  let hasDuetSub = false;
+
+  // デュエットモードのリセット（sub.txtがない場合は除外タイムスタンプもクリア）
+  _duetExcludedTimes = new Set();
+
+  if (typeof duetSubLyricsRaw === 'string' && duetSubLyricsRaw.trim()) {
+    const subObj = parseSubLRC(duetSubLyricsRaw);
+    const subLines = subObj.lines || [];
+    hasDuetSub = !!subObj.hasTs && subLines.some(l => typeof l?.time === 'number');
+    if (hasDuetSub) {
+      // even if the main lyrics didn't have tags, duet sub implies timestamp mode
+      hasTimestamp = true;
+      baseLines = mergeDuetLinesWithSimultaneousSupport(parsed, subLines);
+    }
+  }
+  document.body.classList.toggle('ytm-duet-mode', hasDuetSub);
+
+  let finalLines = baseLines;
+  if (config.useTrans) {
+    const translated = await applyTranslations(baseLines, videoUrl);
+    // applyTranslations rebuilds objects, so re-attach duetSide by index
+    if (Array.isArray(translated) && Array.isArray(baseLines) && translated.length === baseLines.length) {
+      finalLines = translated.map((l, i) => ({ ...l, duetSide: baseLines[i]?.duetSide }));
+    } else {
+      finalLines = translated;
+    }
+  }
+  if (keyAtStart !== currentKey) return;
+
+  finalLines = collapseCrossSideDuplicateLyrics(finalLines);
+
+  // Normalize Dynamic lyrics: expand "word chunks" into character-level timings
+  try {
+    if (Array.isArray(dynamicLines) && dynamicLines.length) {
+      dynamicLines = normalizeDynamicLinesToCharLevel(dynamicLines);
+    }
+  } catch (e) { }
+
+  lyricsData = finalLines;
+  renderLyrics(finalLines);
+  refreshMeaningUi();
+  if (meaningPanelVisible) syncMeaningPanelToPlayback(true);
+}
+
+// ===================== 歌詞候補・ロック関連 =====================
+
+const getCandidateId = (cand, idx = 0) => {
+  if (!cand || typeof cand !== 'object') return String(idx);
+  return String(cand.id || cand.candidate_id || cand.path || cand.file || cand.filename || cand.name || cand.title || idx);
+};
+
+const buildCandidateLabel = (cand, idx = 0) => {
+  if (!cand || typeof cand !== 'object') return `候補${idx + 1}`;
+
+  const rawName = (
+    cand.file ||
+    cand.filename ||
+    cand.name ||
+    cand.path ||
+    cand.select ||
+    cand.list ||
+    cand.candidate_id ||
+    cand.id ||
+    ''
+  );
+
+  const normalized = String(rawName || '').trim().replace(/\\/g, '/');
+  const labelText = normalized ? normalized.split('/').pop() : `候補${idx + 1}`;
+  return labelText;
+};
+
+const safeRuntimeSendMessage = (message) => {
+  return new Promise((resolve) => {
+    try {
+      if (!EXT || !EXT.runtime || typeof EXT.runtime.sendMessage !== 'function') {
+        resolve(null);
+        return;
+      }
+      EXT.runtime.sendMessage(message, (resp) => {
+        const err = EXT.runtime && EXT.runtime.lastError ? EXT.runtime.lastError : null;
+        if (err) {
+          console.warn('[CS] runtime.sendMessage failed:', err.message || err);
+          resolve({ success: false, error: err.message || String(err) });
+          return;
+        }
+        resolve(resp || null);
+      });
     } catch (e) {
-      return '';
+      console.warn('[CS] runtime.sendMessage exception:', e);
+      resolve({ success: false, error: String(e) });
     }
-  };
+  });
+};
 
-  const getCurrentRenderedLyricIndex = () => {
-    if (!Array.isArray(lyricsData) || !lyricsData.length) return -1;
-    if (Number.isInteger(lastActiveIndex) && lastActiveIndex >= 0) {
-      let nonEmptyIndex = -1;
-      for (let i = 0; i <= Math.min(lastActiveIndex, lyricsData.length - 1); i++) {
-        const txt = String(lyricsData[i]?.text || lyricsData[i]?.rawLine || '').trim();
-        if (txt) nonEmptyIndex += 1;
-      }
-      return nonEmptyIndex;
+const formatPreviewTime = (seconds) => {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return '--:--';
+  const total = Math.max(0, Math.floor(seconds));
+  const mm = Math.floor(total / 60);
+  const ss = total % 60;
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+};
+
+const getCurrentPlaybackSeconds = () => {
+  try {
+    const v = document.querySelector('video');
+    if (v && Number.isFinite(v.currentTime)) return v.currentTime;
+  } catch (e) { }
+  return null;
+};
+
+const getCurrentRenderedLyricText = () => {
+  if (lastActiveIndex >= 0 && Array.isArray(lyricsData) && lyricsData[lastActiveIndex]) {
+    const line = lyricsData[lastActiveIndex];
+    const txt = String(line.text || line.rawLine || '').trim();
+    if (txt) return txt;
+  }
+  try {
+    const activeRow = ui.lyrics ? ui.lyrics.querySelector('.lyric-line.active .lyric-main, .lyric-line.active') : null;
+    return activeRow && activeRow.textContent ? activeRow.textContent.trim() : '';
+  } catch (e) {
+    return '';
+  }
+};
+
+const getCurrentRenderedLyricIndex = () => {
+  if (!Array.isArray(lyricsData) || !lyricsData.length) return -1;
+  if (Number.isInteger(lastActiveIndex) && lastActiveIndex >= 0) {
+    let nonEmptyIndex = -1;
+    for (let i = 0; i <= Math.min(lastActiveIndex, lyricsData.length - 1); i++) {
+      const txt = String(lyricsData[i]?.text || lyricsData[i]?.rawLine || '').trim();
+      if (txt) nonEmptyIndex += 1;
     }
-    return -1;
-  };
+    return nonEmptyIndex;
+  }
+  return -1;
+};
 
-  const pickPreviewInfoFromLyrics = (rawLyrics) => {
-    const txt = typeof rawLyrics === 'string' ? rawLyrics.trim() : '';
-    if (!txt) return { line: '', mode: 'empty', lineIndex: -1, total: 0 };
+const pickPreviewInfoFromLyrics = (rawLyrics) => {
+  const txt = typeof rawLyrics === 'string' ? rawLyrics.trim() : '';
+  if (!txt) return { line: '', mode: 'empty', lineIndex: -1, total: 0 };
 
-    const parsed = parseLRCNoFlag(txt);
-    const nonEmpty = Array.isArray(parsed)
-      ? parsed.filter(line => line && typeof line.text === 'string' && line.text.trim())
-      : [];
+  const parsed = parseLRCNoFlag(txt);
+  const nonEmpty = Array.isArray(parsed)
+    ? parsed.filter(line => line && typeof line.text === 'string' && line.text.trim())
+    : [];
 
-    if (!nonEmpty.length) {
-      const plain = txt.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-      if (!plain.length) return { line: '', mode: 'empty', lineIndex: -1, total: 0 };
-      return { line: plain[0], mode: 'plain-first', lineIndex: 0, total: plain.length };
+  if (!nonEmpty.length) {
+    const plain = txt.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    if (!plain.length) return { line: '', mode: 'empty', lineIndex: -1, total: 0 };
+    return { line: plain[0], mode: 'plain-first', lineIndex: 0, total: plain.length };
+  }
+
+  const currentSeconds = getCurrentPlaybackSeconds();
+  const hasTs = nonEmpty.some(line => typeof line.time === 'number' && Number.isFinite(line.time));
+
+  if (hasTs && typeof currentSeconds === 'number') {
+    let foundIndex = 0;
+    for (let i = 0; i < nonEmpty.length; i++) {
+      const t = nonEmpty[i] && typeof nonEmpty[i].time === 'number' ? nonEmpty[i].time : null;
+      if (t == null) continue;
+      if (t > currentSeconds) break;
+      foundIndex = i;
     }
+    return {
+      line: String(nonEmpty[foundIndex].text || '').trim(),
+      mode: 'timestamp',
+      lineIndex: foundIndex,
+      total: nonEmpty.length
+    };
+  }
 
-    const currentSeconds = getCurrentPlaybackSeconds();
-    const hasTs = nonEmpty.some(line => typeof line.time === 'number' && Number.isFinite(line.time));
+  const currentLineIndex = getCurrentRenderedLyricIndex();
+  if (currentLineIndex >= 0) {
+    const idx = Math.max(0, Math.min(currentLineIndex, nonEmpty.length - 1));
+    return {
+      line: String(nonEmpty[idx].text || '').trim(),
+      mode: 'current-line-index',
+      lineIndex: idx,
+      total: nonEmpty.length
+    };
+  }
 
-    if (hasTs && typeof currentSeconds === 'number') {
-      let foundIndex = 0;
-      for (let i = 0; i < nonEmpty.length; i++) {
-        const t = nonEmpty[i] && typeof nonEmpty[i].time === 'number' ? nonEmpty[i].time : null;
-        if (t == null) continue;
-        if (t > currentSeconds) break;
-        foundIndex = i;
-      }
-      return {
-        line: String(nonEmpty[foundIndex].text || '').trim(),
-        mode: 'timestamp',
-        lineIndex: foundIndex,
-        total: nonEmpty.length
-      };
-    }
-
-    const currentLineIndex = getCurrentRenderedLyricIndex();
-    if (currentLineIndex >= 0) {
-      const idx = Math.max(0, Math.min(currentLineIndex, nonEmpty.length - 1));
+  try {
+    const v = document.querySelector('video');
+    if (v && Number.isFinite(v.currentTime) && Number.isFinite(v.duration) && v.duration > 0) {
+      const ratio = Math.max(0, Math.min(1, v.currentTime / v.duration));
+      const idx = Math.max(0, Math.min(nonEmpty.length - 1, Math.round((nonEmpty.length - 1) * ratio)));
       return {
         line: String(nonEmpty[idx].text || '').trim(),
-        mode: 'current-line-index',
+        mode: 'progress-ratio',
         lineIndex: idx,
         total: nonEmpty.length
       };
     }
+  } catch (e) { }
 
-    try {
-      const v = document.querySelector('video');
-      if (v && Number.isFinite(v.currentTime) && Number.isFinite(v.duration) && v.duration > 0) {
-        const ratio = Math.max(0, Math.min(1, v.currentTime / v.duration));
-        const idx = Math.max(0, Math.min(nonEmpty.length - 1, Math.round((nonEmpty.length - 1) * ratio)));
-        return {
-          line: String(nonEmpty[idx].text || '').trim(),
-          mode: 'progress-ratio',
-          lineIndex: idx,
-          total: nonEmpty.length
-        };
-      }
-    } catch (e) { }
-
-    return {
-      line: String(nonEmpty[0].text || '').trim(),
-      mode: 'plain-first',
-      lineIndex: 0,
-      total: nonEmpty.length
-    };
+  return {
+    line: String(nonEmpty[0].text || '').trim(),
+    mode: 'plain-first',
+    lineIndex: 0,
+    total: nonEmpty.length
   };
+};
 
-  async function ensureCandidateLyricsLoaded(candId) {
-    if (!Array.isArray(lyricsCandidates) || !lyricsCandidates.length) return null;
-    const idx = lyricsCandidates.findIndex((cand, i) => getCandidateId(cand, i) === String(candId));
-    if (idx < 0) return null;
-    const cand = lyricsCandidates[idx];
-    if (cand && typeof cand.lyrics === 'string' && cand.lyrics.trim()) return cand;
+async function ensureCandidateLyricsLoaded(candId) {
+  if (!Array.isArray(lyricsCandidates) || !lyricsCandidates.length) return null;
+  const idx = lyricsCandidates.findIndex((cand, i) => getCandidateId(cand, i) === String(candId));
+  if (idx < 0) return null;
+  const cand = lyricsCandidates[idx];
+  if (cand && typeof cand.lyrics === 'string' && cand.lyrics.trim()) return cand;
 
-    const payload = {
-      youtube_url: getCurrentVideoUrl(),
-      video_id: getCurrentVideoId(),
-      translate_to: getRequestedLrchubTranslateLangs(),
-      candidate_id: getCandidateId(cand, idx),
-      candidate: cand || null
+  const payload = {
+    youtube_url: getCurrentVideoUrl(),
+    video_id: getCurrentVideoId(),
+    translate_to: getRequestedLrchubTranslateLangs(),
+    candidate_id: getCandidateId(cand, idx),
+    candidate: cand || null
+  };
+  console.log('[CS] GET_CANDIDATE_LYRICS request:', payload);
+  const res = await safeRuntimeSendMessage({ type: 'GET_CANDIDATE_LYRICS', payload });
+  console.log('[CS] GET_CANDIDATE_LYRICS response:', res);
+  const hasResponseLyrics = typeof res?.lyrics === 'string' && res.lyrics.trim();
+  const hasResponseAnimatedLyrics = typeof res?.animated_lyrics === 'string' && res.animated_lyrics.trim();
+  if (res && res.success && (hasResponseLyrics || hasResponseAnimatedLyrics)) {
+    const next = {
+      ...(cand || {}),
+      lyrics: res.lyrics || cand?.lyrics || '',
+      animated_lyrics: res.animated_lyrics || cand?.animated_lyrics || null,
+      meaningData: res.meaningData || cand?.meaningData || null,
+      songSummary: res.songSummary || cand?.songSummary || null,
+      comments: Array.isArray(res.comments) ? res.comments : (Array.isArray(cand?.comments) ? cand.comments : []),
+      rating: res.rating || cand?.rating || null,
+      translations: res.translations || cand?.translations || null,
+      lrcMap: res.lrcMap || cand?.lrcMap || null,
+      has_synced: typeof res.has_synced === 'boolean' ? res.has_synced : !!/\[\d+:\d{2}(?:\.\d{1,3})?\]/.test(res.lyrics)
     };
-    console.log('[CS] GET_CANDIDATE_LYRICS request:', payload);
-    const res = await safeRuntimeSendMessage({ type: 'GET_CANDIDATE_LYRICS', payload });
-    console.log('[CS] GET_CANDIDATE_LYRICS response:', res);
-    const hasResponseLyrics = typeof res?.lyrics === 'string' && res.lyrics.trim();
-    const hasResponseAnimatedLyrics = typeof res?.animated_lyrics === 'string' && res.animated_lyrics.trim();
-    if (res && res.success && (hasResponseLyrics || hasResponseAnimatedLyrics)) {
-      const next = {
-        ...(cand || {}),
-        lyrics: res.lyrics || cand?.lyrics || '',
-        animated_lyrics: res.animated_lyrics || cand?.animated_lyrics || null,
-        meaningData: res.meaningData || cand?.meaningData || null,
-        songSummary: res.songSummary || cand?.songSummary || null,
-        comments: Array.isArray(res.comments) ? res.comments : (Array.isArray(cand?.comments) ? cand.comments : []),
-        rating: res.rating || cand?.rating || null,
-        translations: res.translations || cand?.translations || null,
-        lrcMap: res.lrcMap || cand?.lrcMap || null,
-        has_synced: typeof res.has_synced === 'boolean' ? res.has_synced : !!/\[\d+:\d{2}(?:\.\d{1,3})?\]/.test(res.lyrics)
-      };
-      lyricsCandidates[idx] = next;
-      return next;
-    }
-    return cand || null;
+    lyricsCandidates[idx] = next;
+    return next;
   }
+  return cand || null;
+}
 
-  function ensureCandidateHoverPreview() {
-    let el = document.getElementById('ytm-candidate-hover-preview');
-    const parent = ui.uploadMenu || document.body;
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'ytm-candidate-hover-preview';
-      el.innerHTML = `
+function ensureCandidateHoverPreview() {
+  let el = document.getElementById('ytm-candidate-hover-preview');
+  const parent = ui.uploadMenu || document.body;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'ytm-candidate-hover-preview';
+    el.innerHTML = `
         <div class="ytm-candidate-hover-preview-title"></div>
         <div class="ytm-candidate-hover-preview-line"></div>
         <div class="ytm-candidate-hover-preview-meta"></div>
         <div class="ytm-candidate-hover-preview-current"></div>
       `;
-      parent.appendChild(el);
-    } else if (el.parentElement !== parent) {
-      parent.appendChild(el);
-    }
-    return el;
+    parent.appendChild(el);
+  } else if (el.parentElement !== parent) {
+    parent.appendChild(el);
+  }
+  return el;
+}
+
+function updateCandidateHoverPreviewPosition(clientX, clientY, anchorEl) {
+  const el = ensureCandidateHoverPreview();
+  if (!el) return;
+  if (ui.uploadMenu && el.parentElement === ui.uploadMenu) {
+    const menuRect = ui.uploadMenu.getBoundingClientRect();
+    const anchorRect = (anchorEl || hoverPreviewAnchorEl || ui.uploadMenu).getBoundingClientRect();
+    const height = el.offsetHeight || 180;
+    const maxTop = Math.max(8, ui.uploadMenu.offsetHeight - height - 8);
+    const desiredTop = Math.max(8, Math.min(maxTop, anchorRect.top - menuRect.top - 8));
+    el.style.top = `${desiredTop}px`;
+    el.style.left = 'auto';
+    el.style.right = `calc(100% + 12px)`;
+    return;
+  }
+  const pad = 18;
+  const width = el.offsetWidth || 360;
+  const height = el.offsetHeight || 160;
+  let left = clientX + pad;
+  let top = clientY + pad;
+  if (left + width > window.innerWidth - 12) left = Math.max(12, clientX - width - pad);
+  if (top + height > window.innerHeight - 12) top = Math.max(12, clientY - height - pad);
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+}
+
+function renderCandidateHoverPreview(candId) {
+  const el = ensureCandidateHoverPreview();
+  if (!el || !candId) return;
+  const list = Array.isArray(lyricsCandidates) ? lyricsCandidates : [];
+  const idx = list.findIndex((cand, i) => getCandidateId(cand, i) === String(candId));
+  if (idx < 0) return;
+  const cand = list[idx];
+  const titleEl = el.querySelector('.ytm-candidate-hover-preview-title');
+  const lineEl = el.querySelector('.ytm-candidate-hover-preview-line');
+  const metaEl = el.querySelector('.ytm-candidate-hover-preview-meta');
+  const currentEl = el.querySelector('.ytm-candidate-hover-preview-current');
+  const info = pickPreviewInfoFromLyrics(cand && cand.lyrics ? cand.lyrics : '');
+  const currentLine = getCurrentRenderedLyricText();
+  const currentSeconds = getCurrentPlaybackSeconds();
+
+  if (titleEl) titleEl.textContent = buildCandidateLabel(cand, idx);
+
+  if (lineEl) {
+    if (info.line) lineEl.textContent = info.line;
+    else if (hoverPreviewLoading) lineEl.textContent = '候補の歌詞データを読み込み中...';
+    else lineEl.textContent = 'この候補の歌詞データを表示できませんでした';
   }
 
-  function updateCandidateHoverPreviewPosition(clientX, clientY, anchorEl) {
-    const el = ensureCandidateHoverPreview();
-    if (!el) return;
-    if (ui.uploadMenu && el.parentElement === ui.uploadMenu) {
-      const menuRect = ui.uploadMenu.getBoundingClientRect();
-      const anchorRect = (anchorEl || hoverPreviewAnchorEl || ui.uploadMenu).getBoundingClientRect();
-      const height = el.offsetHeight || 180;
-      const maxTop = Math.max(8, ui.uploadMenu.offsetHeight - height - 8);
-      const desiredTop = Math.max(8, Math.min(maxTop, anchorRect.top - menuRect.top - 8));
-      el.style.top = `${desiredTop}px`;
-      el.style.left = 'auto';
-      el.style.right = `calc(100% + 12px)`;
+  if (metaEl) {
+    const parts = [];
+    if (typeof currentSeconds === 'number') parts.push(`再生位置 ${formatPreviewTime(currentSeconds)}`);
+    if (info.total > 0 && info.lineIndex >= 0) parts.push(`行 ${info.lineIndex + 1}/${info.total}`);
+    if (info.mode === 'timestamp') parts.push('候補自身の同期位置');
+    else if (info.mode === 'current-line-index') parts.push('現在の表示行に追従');
+    else if (info.mode === 'progress-ratio') parts.push('再生率から推定');
+    else if (info.mode === 'plain-first') parts.push('先頭行を表示');
+    metaEl.textContent = parts.join(' / ');
+  }
+
+  if (currentEl) {
+    currentEl.textContent = currentLine ? `現在表示中: ${currentLine}` : '';
+  }
+
+  updateCandidateHoverPreviewPosition(hoverPreviewMouseX, hoverPreviewMouseY);
+  el.classList.add('visible');
+}
+
+function startCandidateHoverPreviewLoop() {
+  if (hoverPreviewRafId) return;
+  const tick = () => {
+    if (!hoverPreviewCandidateId) {
+      hoverPreviewRafId = null;
       return;
     }
-    const pad = 18;
-    const width = el.offsetWidth || 360;
-    const height = el.offsetHeight || 160;
-    let left = clientX + pad;
-    let top = clientY + pad;
-    if (left + width > window.innerWidth - 12) left = Math.max(12, clientX - width - pad);
-    if (top + height > window.innerHeight - 12) top = Math.max(12, clientY - height - pad);
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
-  }
+    renderCandidateHoverPreview(hoverPreviewCandidateId);
+    hoverPreviewRafId = requestAnimationFrame(tick);
+  };
+  hoverPreviewRafId = requestAnimationFrame(tick);
+}
 
-  function renderCandidateHoverPreview(candId) {
-    const el = ensureCandidateHoverPreview();
-    if (!el || !candId) return;
-    const list = Array.isArray(lyricsCandidates) ? lyricsCandidates : [];
-    const idx = list.findIndex((cand, i) => getCandidateId(cand, i) === String(candId));
-    if (idx < 0) return;
-    const cand = list[idx];
-    const titleEl = el.querySelector('.ytm-candidate-hover-preview-title');
-    const lineEl = el.querySelector('.ytm-candidate-hover-preview-line');
-    const metaEl = el.querySelector('.ytm-candidate-hover-preview-meta');
-    const currentEl = el.querySelector('.ytm-candidate-hover-preview-current');
-    const info = pickPreviewInfoFromLyrics(cand && cand.lyrics ? cand.lyrics : '');
-    const currentLine = getCurrentRenderedLyricText();
-    const currentSeconds = getCurrentPlaybackSeconds();
-
-    if (titleEl) titleEl.textContent = buildCandidateLabel(cand, idx);
-
-    if (lineEl) {
-      if (info.line) lineEl.textContent = info.line;
-      else if (hoverPreviewLoading) lineEl.textContent = '候補の歌詞データを読み込み中...';
-      else lineEl.textContent = 'この候補の歌詞データを表示できませんでした';
-    }
-
-    if (metaEl) {
-      const parts = [];
-      if (typeof currentSeconds === 'number') parts.push(`再生位置 ${formatPreviewTime(currentSeconds)}`);
-      if (info.total > 0 && info.lineIndex >= 0) parts.push(`行 ${info.lineIndex + 1}/${info.total}`);
-      if (info.mode === 'timestamp') parts.push('候補自身の同期位置');
-      else if (info.mode === 'current-line-index') parts.push('現在の表示行に追従');
-      else if (info.mode === 'progress-ratio') parts.push('再生率から推定');
-      else if (info.mode === 'plain-first') parts.push('先頭行を表示');
-      metaEl.textContent = parts.join(' / ');
-    }
-
-    if (currentEl) {
-      currentEl.textContent = currentLine ? `現在表示中: ${currentLine}` : '';
-    }
-
-    updateCandidateHoverPreviewPosition(hoverPreviewMouseX, hoverPreviewMouseY);
+async function showCandidateHoverPreview(candId, ev) {
+  if (!candId) return;
+  hoverPreviewCandidateId = candId;
+  hoverPreviewAnchorEl = ev?.currentTarget || ev?.target?.closest?.('.ytm-upload-menu-item-candidate') || hoverPreviewAnchorEl;
+  hoverPreviewMouseX = ev?.clientX ?? hoverPreviewMouseX;
+  hoverPreviewMouseY = ev?.clientY ?? hoverPreviewMouseY;
+  hoverPreviewLoading = true;
+  console.log('[CS] hover preview start:', candId);
+  const el = ensureCandidateHoverPreview();
+  if (el) {
+    renderCandidateHoverPreview(candId);
+    updateCandidateHoverPreviewPosition(hoverPreviewMouseX, hoverPreviewMouseY, hoverPreviewAnchorEl);
     el.classList.add('visible');
   }
+  startCandidateHoverPreviewLoop();
+  const cand = await ensureCandidateLyricsLoaded(candId);
+  if (hoverPreviewCandidateId !== candId) return;
+  hoverPreviewLoading = false;
+  renderCandidateHoverPreview(candId);
+}
 
-  function startCandidateHoverPreviewLoop() {
-    if (hoverPreviewRafId) return;
-    const tick = () => {
-      if (!hoverPreviewCandidateId) {
-        hoverPreviewRafId = null;
-        return;
-      }
-      renderCandidateHoverPreview(hoverPreviewCandidateId);
-      hoverPreviewRafId = requestAnimationFrame(tick);
-    };
-    hoverPreviewRafId = requestAnimationFrame(tick);
+function hideCandidateHoverPreview() {
+  hoverPreviewCandidateId = null;
+  hoverPreviewLoading = false;
+  hoverPreviewAnchorEl = null;
+  if (hoverPreviewRafId) {
+    cancelAnimationFrame(hoverPreviewRafId);
+    hoverPreviewRafId = null;
+  }
+  const el = document.getElementById('ytm-candidate-hover-preview');
+  if (el) el.classList.remove('visible');
+}
+
+async function selectCandidateById(candId) {
+  if (!Array.isArray(lyricsCandidates) || !lyricsCandidates.length) return;
+  let cand = lyricsCandidates.find((c, idx) => getCandidateId(c, idx) === String(candId));
+  if (!cand) return;
+  if (!(typeof cand.lyrics === 'string' && cand.lyrics.trim())) {
+    cand = await ensureCandidateLyricsLoaded(candId);
+  }
+  const hasCandidateLyrics = typeof cand?.lyrics === 'string' && cand.lyrics.trim();
+  const hasCandidateAnimatedLyrics = typeof cand?.animated_lyrics === 'string' && cand.animated_lyrics.trim();
+  if (!cand || (!hasCandidateLyrics && !hasCandidateAnimatedLyrics)) {
+    showToast('この候補の歌詞データを読み込めませんでした');
+    return;
+  }
+  const nextLyricsText = (config.useAnimatedCaptions && hasCandidateAnimatedLyrics)
+    ? cand.animated_lyrics
+    : cand.lyrics;
+  selectedCandidateId = candId;
+  dynamicLines = null;
+  lyricsTranslationMap = {
+    ...normalizeTranslationsToLrcMapLocal(cand.lrcMap),
+    ...normalizeTranslationsToLrcMapLocal(cand.translations)
+  };
+  setLyricsMeaningData(cand);
+  duetSubDynamicLines = null;
+  _duetExcludedTimes = new Set();
+  if (currentKey) {
+    storage.set(currentKey, {
+      lyrics: cand.lyrics,
+      animated_lyrics: cand.animated_lyrics || null,
+      dynamicLines: null,
+      noLyrics: false,
+      lrcMap: lyricsTranslationMap || null,
+      meaningData: lyricsMeaning || null,
+      candidateId: cand.id || candId || null
+    });
+  }
+  await applyLyricsText(nextLyricsText);
+  const youtube_url = getCurrentVideoUrl();
+  const video_id = getCurrentVideoId();
+  const candidate_id = cand.id || candId;
+  try {
+    chrome.runtime.sendMessage(
+      { type: 'SELECT_LYRICS_CANDIDATE', payload: { youtube_url, video_id, candidate_id } },
+      (res) => console.log('[CS] SELECT_LYRICS_CANDIDATE result:', res)
+    );
+  } catch (e) {
+    console.warn('[CS] SELECT_LYRICS_CANDIDATE failed to send', e);
+  }
+  const reloadKey = currentKey;
+  setTimeout(() => {
+    const metaNow = getMetadata();
+    if (!metaNow) return;
+    const keyNow = `${metaNow.title}///${metaNow.artist}`;
+    if (keyNow !== reloadKey) return;
+    storage.remove(reloadKey);
+    loadLyrics(metaNow);
+  }, 10000);
+}
+
+let lyricsLockState = null;
+
+function normalizeLockRequestId(req) {
+  return String(req?.request || req?.id || '').trim().toLowerCase();
+}
+
+function inferLockRequestTarget(req) {
+  if (!req || typeof req !== 'object') return null;
+
+  const explicit = String(req.target || '').trim().toLowerCase();
+  if (explicit === 'sync' || explicit === 'dynamic') return explicit;
+
+  const key = normalizeLockRequestId(req);
+  if (key === 'lock_current_sync') return 'sync';
+  if (key === 'lock_current_dynamic') return 'dynamic';
+
+  const label = String(req.label || '').toLowerCase();
+  if (label.includes('lock dynamic') || label.includes('dynamic') || label.includes('動く')) return 'dynamic';
+  if (label.includes('lock sync') || label.includes('sync') || label.includes('同期') || label.includes('readme')) return 'sync';
+
+  return null;
+}
+
+function buildLyricsLockState(requests, config, prevState) {
+  const prevByRequest = prevState && prevState.byRequest && typeof prevState.byRequest === 'object'
+    ? prevState.byRequest
+    : {};
+
+  const next = {
+    sync: false,
+    dynamic: false,
+    byRequest: { ...prevByRequest }
+  };
+
+  if (Array.isArray(requests)) {
+    requests.forEach((req) => {
+      if (!req || typeof req !== 'object') return;
+
+      const requestId = normalizeLockRequestId(req);
+      const target = inferLockRequestTarget(req);
+      const locked = req.locked === true || req.available === false || req.state === 'locked';
+
+      if (requestId) next.byRequest[requestId] = locked;
+      if (target && locked) next[target] = true;
+    });
   }
 
-  async function showCandidateHoverPreview(candId, ev) {
-    if (!candId) return;
-    hoverPreviewCandidateId = candId;
-    hoverPreviewAnchorEl = ev?.currentTarget || ev?.target?.closest?.('.ytm-upload-menu-item-candidate') || hoverPreviewAnchorEl;
-    hoverPreviewMouseX = ev?.clientX ?? hoverPreviewMouseX;
-    hoverPreviewMouseY = ev?.clientY ?? hoverPreviewMouseY;
-    hoverPreviewLoading = true;
-    console.log('[CS] hover preview start:', candId);
-    const el = ensureCandidateHoverPreview();
-    if (el) {
-      renderCandidateHoverPreview(candId);
+  // Default lock states removed as per user request
+
+  next.sync = !!next.byRequest.lock_current_sync || !!next.sync;
+  next.dynamic = !!next.byRequest.lock_current_dynamic || !!next.dynamic;
+
+  return next;
+}
+
+function syncLyricsLockState() {
+  lyricsLockState = buildLyricsLockState(lyricsRequests, lyricsConfig, lyricsLockState);
+  return lyricsLockState;
+}
+
+function isLockRequestLocked(req, state = lyricsLockState) {
+  const target = inferLockRequestTarget(req);
+  const requestId = normalizeLockRequestId(req);
+
+  if (requestId && state?.byRequest && Object.prototype.hasOwnProperty.call(state.byRequest, requestId)) {
+    return !!state.byRequest[requestId];
+  }
+  if (target && state && Object.prototype.hasOwnProperty.call(state, target)) {
+    return !!state[target];
+  }
+  return !!req?.locked;
+}
+
+function refreshCandidateMenu() {
+  if (!ui.uploadMenu) {
+    if (ui.lyricsBtn) ui.lyricsBtn.classList.remove('ytm-lyrics-has-candidates');
+    return;
+  }
+  const section = ui.uploadMenu.querySelector('.ytm-upload-menu-candidates');
+  const list = section ? section.querySelector('.ytm-upload-menu-candidate-list') : null;
+  if (!section || !list) return;
+  list.innerHTML = '';
+  if (!Array.isArray(lyricsCandidates) || !lyricsCandidates.length) {
+    section.style.display = 'none';
+    if (ui.lyricsBtn) ui.lyricsBtn.classList.remove('ytm-lyrics-has-candidates');
+    return;
+  }
+  section.style.display = 'block';
+  lyricsCandidates.forEach((cand, idx) => {
+    const id = getCandidateId(cand, idx);
+    const btn = document.createElement('button');
+    btn.className = 'ytm-upload-menu-item ytm-upload-menu-item-candidate';
+    btn.dataset.action = 'candidate';
+    btn.dataset.candidateId = id;
+    btn.textContent = buildCandidateLabel(cand, idx);
+    if (String(selectedCandidateId || '') === id) {
+      btn.classList.add('is-selected');
+    }
+    btn.addEventListener('mouseenter', (ev) => {
+      showCandidateHoverPreview(id, ev);
+    });
+    btn.addEventListener('mousemove', (ev) => {
+      hoverPreviewMouseX = ev.clientX;
+      hoverPreviewMouseY = ev.clientY;
+      hoverPreviewAnchorEl = ev.currentTarget || hoverPreviewAnchorEl;
       updateCandidateHoverPreviewPosition(hoverPreviewMouseX, hoverPreviewMouseY, hoverPreviewAnchorEl);
-      el.classList.add('visible');
-    }
-    startCandidateHoverPreviewLoop();
-    const cand = await ensureCandidateLyricsLoaded(candId);
-    if (hoverPreviewCandidateId !== candId) return;
-    hoverPreviewLoading = false;
-    renderCandidateHoverPreview(candId);
+    });
+    btn.addEventListener('mouseleave', () => {
+      hideCandidateHoverPreview();
+    });
+    list.appendChild(btn);
+  });
+  if (ui.lyricsBtn) {
+    ui.lyricsBtn.classList.remove('ytm-lyrics-has-candidates');
+    void ui.lyricsBtn.offsetWidth;
+    ui.lyricsBtn.classList.add('ytm-lyrics-has-candidates');
   }
+}
 
-  function hideCandidateHoverPreview() {
-    hoverPreviewCandidateId = null;
-    hoverPreviewLoading = false;
-    hoverPreviewAnchorEl = null;
-    if (hoverPreviewRafId) {
-      cancelAnimationFrame(hoverPreviewRafId);
-      hoverPreviewRafId = null;
-    }
-    const el = document.getElementById('ytm-candidate-hover-preview');
-    if (el) el.classList.remove('visible');
+function refreshLockMenu() {
+  if (!ui.uploadMenu) return;
+  const lockSection = ui.uploadMenu.querySelector('.ytm-upload-menu-locks');
+  const lockList = lockSection ? lockSection.querySelector('.ytm-upload-menu-lock-list') : null;
+  const addSyncBtn = ui.uploadMenu.querySelector('.ytm-upload-menu-item[data-action="add-sync"]');
+  if (!lockSection || !lockList || !addSyncBtn) return;
+  const lockState = syncLyricsLockState();
+  lockList.innerHTML = '';
+  const mergedRequests = [];
+  if (Array.isArray(lyricsRequests)) {
+    lyricsRequests.forEach(r => { if (r) mergedRequests.push({ ...r }); });
   }
-
-  async function selectCandidateById(candId) {
-    if (!Array.isArray(lyricsCandidates) || !lyricsCandidates.length) return;
-    let cand = lyricsCandidates.find((c, idx) => getCandidateId(c, idx) === String(candId));
-    if (!cand) return;
-    if (!(typeof cand.lyrics === 'string' && cand.lyrics.trim())) {
-      cand = await ensureCandidateLyricsLoaded(candId);
-    }
-    const hasCandidateLyrics = typeof cand?.lyrics === 'string' && cand.lyrics.trim();
-    const hasCandidateAnimatedLyrics = typeof cand?.animated_lyrics === 'string' && cand.animated_lyrics.trim();
-    if (!cand || (!hasCandidateLyrics && !hasCandidateAnimatedLyrics)) {
-      showToast('この候補の歌詞データを読み込めませんでした');
-      return;
-    }
-    const nextLyricsText = (config.useAnimatedCaptions && hasCandidateAnimatedLyrics)
-      ? cand.animated_lyrics
-      : cand.lyrics;
-    selectedCandidateId = candId;
-    dynamicLines = null;
-    lyricsTranslationMap = {
-      ...normalizeTranslationsToLrcMapLocal(cand.lrcMap),
-      ...normalizeTranslationsToLrcMapLocal(cand.translations)
-    };
-    setLyricsMeaningData(cand);
-    duetSubDynamicLines = null;
-    _duetExcludedTimes = new Set();
-    if (currentKey) {
-      storage.set(currentKey, {
-        lyrics: cand.lyrics,
-        animated_lyrics: cand.animated_lyrics || null,
-        dynamicLines: null,
-        noLyrics: false,
-        lrcMap: lyricsTranslationMap || null,
-        meaningData: lyricsMeaning || null,
-        candidateId: cand.id || candId || null
-      });
-    }
-    await applyLyricsText(nextLyricsText);
-    const youtube_url = getCurrentVideoUrl();
-    const video_id = getCurrentVideoId();
-    const candidate_id = cand.id || candId;
-    try {
-      chrome.runtime.sendMessage(
-        { type: 'SELECT_LYRICS_CANDIDATE', payload: { youtube_url, video_id, candidate_id } },
-        (res) => console.log('[CS] SELECT_LYRICS_CANDIDATE result:', res)
-      );
-    } catch (e) {
-      console.warn('[CS] SELECT_LYRICS_CANDIDATE failed to send', e);
-    }
-    const reloadKey = currentKey;
-    setTimeout(() => {
-      const metaNow = getMetadata();
-      if (!metaNow) return;
-      const keyNow = `${metaNow.title}///${metaNow.artist}`;
-      if (keyNow !== reloadKey) return;
-      storage.remove(reloadKey);
-      loadLyrics(metaNow);
-    }, 10000);
-  }
-
-  let lyricsLockState = null;
-
-  function normalizeLockRequestId(req) {
-    return String(req?.request || req?.id || '').trim().toLowerCase();
-  }
-
-  function inferLockRequestTarget(req) {
-    if (!req || typeof req !== 'object') return null;
-
-    const explicit = String(req.target || '').trim().toLowerCase();
-    if (explicit === 'sync' || explicit === 'dynamic') return explicit;
-
-    const key = normalizeLockRequestId(req);
-    if (key === 'lock_current_sync') return 'sync';
-    if (key === 'lock_current_dynamic') return 'dynamic';
-
-    const label = String(req.label || '').toLowerCase();
-    if (label.includes('lock dynamic') || label.includes('dynamic') || label.includes('動く')) return 'dynamic';
-    if (label.includes('lock sync') || label.includes('sync') || label.includes('同期') || label.includes('readme')) return 'sync';
-
-    return null;
-  }
-
-  function buildLyricsLockState(requests, config, prevState) {
-    const prevByRequest = prevState && prevState.byRequest && typeof prevState.byRequest === 'object'
-      ? prevState.byRequest
-      : {};
-
-    const next = {
-      sync: false,
-      dynamic: false,
-      byRequest: { ...prevByRequest }
-    };
-
-    if (Array.isArray(requests)) {
-      requests.forEach((req) => {
-        if (!req || typeof req !== 'object') return;
-
-        const requestId = normalizeLockRequestId(req);
-        const target = inferLockRequestTarget(req);
-        const locked = req.locked === true || req.available === false || req.state === 'locked';
-
-        if (requestId) next.byRequest[requestId] = locked;
-        if (target && locked) next[target] = true;
-      });
-    }
-
-    // Default lock states removed as per user request
-
-    next.sync = !!next.byRequest.lock_current_sync || !!next.sync;
-    next.dynamic = !!next.byRequest.lock_current_dynamic || !!next.dynamic;
-
-    return next;
-  }
-
-  function syncLyricsLockState() {
-    lyricsLockState = buildLyricsLockState(lyricsRequests, lyricsConfig, lyricsLockState);
-    return lyricsLockState;
-  }
-
-  function isLockRequestLocked(req, state = lyricsLockState) {
-    const target = inferLockRequestTarget(req);
-    const requestId = normalizeLockRequestId(req);
-
-    if (requestId && state?.byRequest && Object.prototype.hasOwnProperty.call(state.byRequest, requestId)) {
-      return !!state.byRequest[requestId];
-    }
-    if (target && state && Object.prototype.hasOwnProperty.call(state, target)) {
-      return !!state[target];
-    }
-    return !!req?.locked;
-  }
-
-  function refreshCandidateMenu() {
-    if (!ui.uploadMenu) {
-      if (ui.lyricsBtn) ui.lyricsBtn.classList.remove('ytm-lyrics-has-candidates');
-      return;
-    }
-    const section = ui.uploadMenu.querySelector('.ytm-upload-menu-candidates');
-    const list = section ? section.querySelector('.ytm-upload-menu-candidate-list') : null;
-    if (!section || !list) return;
-    list.innerHTML = '';
-    if (!Array.isArray(lyricsCandidates) || !lyricsCandidates.length) {
-      section.style.display = 'none';
-      if (ui.lyricsBtn) ui.lyricsBtn.classList.remove('ytm-lyrics-has-candidates');
-      return;
-    }
-    section.style.display = 'block';
-    lyricsCandidates.forEach((cand, idx) => {
-      const id = getCandidateId(cand, idx);
+  const ensureRequest = (id, label, target) => {
+    const idLower = String(id).toLowerCase();
+    if (mergedRequests.some(r => String(r.request || r.id || '').toLowerCase() === idLower)) return;
+    mergedRequests.push({ request: id, label, target });
+  };
+  // ensureRequest for lock_current_sync and lock_current_dynamic removed as per user request
+  const activeReqs = mergedRequests.filter(r => {
+    if (!r) return false;
+    if (r.has_lyrics) return true;
+    if (r.target === 'sync' || r.target === 'dynamic') return true;
+    const key = String(r.request || r.id || '').toLowerCase();
+    if (!key) return false;
+    return key.startsWith('lock_current_');
+  });
+  if (!activeReqs.length) {
+    lockSection.style.display = 'none';
+  } else {
+    lockSection.style.display = 'block';
+    activeReqs.forEach(r => {
       const btn = document.createElement('button');
-      btn.className = 'ytm-upload-menu-item ytm-upload-menu-item-candidate';
-      btn.dataset.action = 'candidate';
-      btn.dataset.candidateId = id;
-      btn.textContent = buildCandidateLabel(cand, idx);
-      if (String(selectedCandidateId || '') === id) {
-        btn.classList.add('is-selected');
+      btn.className = 'ytm-upload-menu-item';
+      btn.dataset.action = 'lock-request';
+      btn.dataset.requestId = r.request || r.id || '';
+      btn.textContent = r.label || r.request || r.id || '歌詞を確定';
+      const locked = isLockRequestLocked(r, lockState);
+      if (locked) {
+        btn.classList.add('ytm-upload-menu-item-disabled');
+        btn.title = 'すでに確定された歌詞です';
       }
-      btn.addEventListener('mouseenter', (ev) => {
-        showCandidateHoverPreview(id, ev);
-      });
-      btn.addEventListener('mousemove', (ev) => {
-        hoverPreviewMouseX = ev.clientX;
-        hoverPreviewMouseY = ev.clientY;
-        hoverPreviewAnchorEl = ev.currentTarget || hoverPreviewAnchorEl;
-        updateCandidateHoverPreviewPosition(hoverPreviewMouseX, hoverPreviewMouseY, hoverPreviewAnchorEl);
-      });
-      btn.addEventListener('mouseleave', () => {
-        hideCandidateHoverPreview();
-      });
-      list.appendChild(btn);
+      lockList.appendChild(btn);
     });
-    if (ui.lyricsBtn) {
-      ui.lyricsBtn.classList.remove('ytm-lyrics-has-candidates');
-      void ui.lyricsBtn.offsetWidth;
-      ui.lyricsBtn.classList.add('ytm-lyrics-has-candidates');
-    }
   }
-
-  function refreshLockMenu() {
-    if (!ui.uploadMenu) return;
-    const lockSection = ui.uploadMenu.querySelector('.ytm-upload-menu-locks');
-    const lockList = lockSection ? lockSection.querySelector('.ytm-upload-menu-lock-list') : null;
-    const addSyncBtn = ui.uploadMenu.querySelector('.ytm-upload-menu-item[data-action="add-sync"]');
-    if (!lockSection || !lockList || !addSyncBtn) return;
-    const lockState = syncLyricsLockState();
-    lockList.innerHTML = '';
-    const mergedRequests = [];
-    if (Array.isArray(lyricsRequests)) {
-      lyricsRequests.forEach(r => { if (r) mergedRequests.push({ ...r }); });
-    }
-    const ensureRequest = (id, label, target) => {
-      const idLower = String(id).toLowerCase();
-      if (mergedRequests.some(r => String(r.request || r.id || '').toLowerCase() === idLower)) return;
-      mergedRequests.push({ request: id, label, target });
-    };
-    // ensureRequest for lock_current_sync and lock_current_dynamic removed as per user request
-    const activeReqs = mergedRequests.filter(r => {
-      if (!r) return false;
-      if (r.has_lyrics) return true;
-      if (r.target === 'sync' || r.target === 'dynamic') return true;
-      const key = String(r.request || r.id || '').toLowerCase();
-      if (!key) return false;
-      return key.startsWith('lock_current_');
-    });
-    if (!activeReqs.length) {
-      lockSection.style.display = 'none';
-    } else {
-      lockSection.style.display = 'block';
-      activeReqs.forEach(r => {
-        const btn = document.createElement('button');
-        btn.className = 'ytm-upload-menu-item';
-        btn.dataset.action = 'lock-request';
-        btn.dataset.requestId = r.request || r.id || '';
-        btn.textContent = r.label || r.request || r.id || '歌詞を確定';
-        const locked = isLockRequestLocked(r, lockState);
-        if (locked) {
-          btn.classList.add('ytm-upload-menu-item-disabled');
-          btn.title = 'すでに確定された歌詞です';
-        }
-        lockList.appendChild(btn);
-      });
-    }
-    const shouldDisableAddSync = !!lockState?.sync && !!lockState?.dynamic;
-    addSyncBtn.classList.toggle('ytm-upload-menu-item-disabled', shouldDisableAddSync);
-    if (shouldDisableAddSync) {
-      addSyncBtn.dataset.disabledMessage = 'すでに確定された歌詞です';
-      addSyncBtn.title = 'すでに確定された歌詞です';
-    } else {
-      delete addSyncBtn.dataset.disabledMessage;
-      addSyncBtn.title = '';
-    }
+  const shouldDisableAddSync = !!lockState?.sync && !!lockState?.dynamic;
+  addSyncBtn.classList.toggle('ytm-upload-menu-item-disabled', shouldDisableAddSync);
+  if (shouldDisableAddSync) {
+    addSyncBtn.dataset.disabledMessage = 'すでに確定された歌詞です';
+    addSyncBtn.title = 'すでに確定された歌詞です';
+  } else {
+    delete addSyncBtn.dataset.disabledMessage;
+    addSyncBtn.title = '';
   }
+}
 
 
-  function setupUploadMenu(uploadBtn) {
-    if (!ui.btnArea || ui.uploadMenu) return;
-    ui.btnArea.style.position = 'relative';
-    const menu = createEl('div', 'ytm-upload-menu', 'ytm-upload-menu');
-    menu.innerHTML = `
+function setupUploadMenu(uploadBtn) {
+  if (!ui.btnArea || ui.uploadMenu) return;
+  ui.btnArea.style.position = 'relative';
+  const menu = createEl('div', 'ytm-upload-menu', 'ytm-upload-menu');
+  menu.innerHTML = `
       <div class="ytm-upload-menu-title">Lyrics</div>
       <button class="ytm-upload-menu-item" data-action="local">
         <span class="ytm-upload-menu-item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align: -0.15em; margin-right: 6px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg></span>
@@ -3127,63 +3148,63 @@ async function applyLyricsText(rawLyrics) {
         <div class="ytm-upload-menu-candidate-list"></div>
       </div>
     `;
-    ui.btnArea.appendChild(menu);
-    ui.uploadMenu = menu;
-    const toggleMenu = (show) => {
-      if (!ui.uploadMenu) return;
-      const cl = ui.uploadMenu.classList;
-      if (show === undefined) cl.toggle('visible');
-      else if (show) cl.add('visible');
-      else { cl.remove('visible'); hideCandidateHoverPreview(); }
-    };
-    uploadBtn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      toggleMenu();
-    });
-    ui.uploadMenu.addEventListener('click', (ev) => {
-      const target = ev.target.closest('.ytm-upload-menu-item');
-      if (!target) return;
-      if (target.classList.contains('ytm-upload-menu-item-disabled')) {
-        const msg = target.dataset.disabledMessage || 'この操作は現在利用できません';
-        showToast(msg);
-        return;
-      }
-      const action = target.dataset.action;
-      const candId = target.dataset.candidateId || null;
-      const reqId = target.dataset.requestId || null;
-      toggleMenu(false);
-      hideCandidateHoverPreview();
-      if (action === 'local') {
-        ui.input?.click();
-      } else if (action === 'add-sync') {
-        const videoUrl = getCurrentVideoUrl();
-        const base = 'https://lrchub.coreone.work';
-        const lrchubUrl = videoUrl ? `${base}/manual?video_url=${encodeURIComponent(videoUrl)}` : base;
-        window.open(lrchubUrl, '_blank');
-      } else if (action === 'candidate' && candId) {
-        selectCandidateById(candId);
-      } else if (action === 'lock-request' && reqId) {
-        sendLockRequest(reqId);
-      }
-    });
-
-    if (!uploadMenuGlobalSetup) {
-      uploadMenuGlobalSetup = true;
-      document.addEventListener('click', (ev) => {
-        if (!ui.uploadMenu) return;
-        if (!ui.uploadMenu.classList.contains('visible')) return;
-        if (ui.uploadMenu.contains(ev.target) || uploadBtn.contains(ev.target)) return;
-        ui.uploadMenu.classList.remove('visible');
-      }, true);
+  ui.btnArea.appendChild(menu);
+  ui.uploadMenu = menu;
+  const toggleMenu = (show) => {
+    if (!ui.uploadMenu) return;
+    const cl = ui.uploadMenu.classList;
+    if (show === undefined) cl.toggle('visible');
+    else if (show) cl.add('visible');
+    else { cl.remove('visible'); hideCandidateHoverPreview(); }
+  };
+  uploadBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    toggleMenu();
+  });
+  ui.uploadMenu.addEventListener('click', (ev) => {
+    const target = ev.target.closest('.ytm-upload-menu-item');
+    if (!target) return;
+    if (target.classList.contains('ytm-upload-menu-item-disabled')) {
+      const msg = target.dataset.disabledMessage || 'この操作は現在利用できません';
+      showToast(msg);
+      return;
     }
-    refreshCandidateMenu();
-    refreshLockMenu();
-  }
+    const action = target.dataset.action;
+    const candId = target.dataset.candidateId || null;
+    const reqId = target.dataset.requestId || null;
+    toggleMenu(false);
+    hideCandidateHoverPreview();
+    if (action === 'local') {
+      ui.input?.click();
+    } else if (action === 'add-sync') {
+      const videoUrl = getCurrentVideoUrl();
+      const base = 'https://lrchub.coreone.work';
+      const lrchubUrl = videoUrl ? `${base}/manual?video_url=${encodeURIComponent(videoUrl)}` : base;
+      window.open(lrchubUrl, '_blank');
+    } else if (action === 'candidate' && candId) {
+      selectCandidateById(candId);
+    } else if (action === 'lock-request' && reqId) {
+      sendLockRequest(reqId);
+    }
+  });
 
-  function setupDeleteDialog(trashBtn) {
-    if (!ui.btnArea || ui.deleteDialog) return;
-    ui.btnArea.style.position = 'relative';
-    const dialog = createEl('div', 'ytm-delete-dialog', 'ytm-confirm-dialog', `
+  if (!uploadMenuGlobalSetup) {
+    uploadMenuGlobalSetup = true;
+    document.addEventListener('click', (ev) => {
+      if (!ui.uploadMenu) return;
+      if (!ui.uploadMenu.classList.contains('visible')) return;
+      if (ui.uploadMenu.contains(ev.target) || uploadBtn.contains(ev.target)) return;
+      ui.uploadMenu.classList.remove('visible');
+    }, true);
+  }
+  refreshCandidateMenu();
+  refreshLockMenu();
+}
+
+function setupDeleteDialog(trashBtn) {
+  if (!ui.btnArea || ui.deleteDialog) return;
+  ui.btnArea.style.position = 'relative';
+  const dialog = createEl('div', 'ytm-delete-dialog', 'ytm-confirm-dialog', `
       <div class="ytm-confirm-title">歌詞を削除</div>
       <div class="ytm-confirm-message">
         この曲の保存済み歌詞を削除しますか？<br>
@@ -3194,230 +3215,230 @@ async function applyLyricsText(rawLyrics) {
         <button class="ytm-confirm-btn danger">削除</button>
       </div>
     `);
-    ui.btnArea.appendChild(dialog);
-    ui.deleteDialog = dialog;
-    const toggleDialog = (show) => {
-      if (!ui.deleteDialog) return;
-      const cl = ui.deleteDialog.classList;
-      if (show === undefined) cl.toggle('visible');
-      else if (show) cl.add('visible');
-      else cl.remove('visible');
-    };
-    trashBtn.addEventListener('click', (ev) => {
+  ui.btnArea.appendChild(dialog);
+  ui.deleteDialog = dialog;
+  const toggleDialog = (show) => {
+    if (!ui.deleteDialog) return;
+    const cl = ui.deleteDialog.classList;
+    if (show === undefined) cl.toggle('visible');
+    else if (show) cl.add('visible');
+    else cl.remove('visible');
+  };
+  trashBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    toggleDialog();
+  });
+  const cancelBtn = dialog.querySelector('.ytm-confirm-btn.cancel');
+  const dangerBtn = dialog.querySelector('.ytm-confirm-btn.danger');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      toggleDialog();
+      toggleDialog(false);
     });
-    const cancelBtn = dialog.querySelector('.ytm-confirm-btn.cancel');
-    const dangerBtn = dialog.querySelector('.ytm-confirm-btn.danger');
-    if (cancelBtn) {
-      cancelBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        toggleDialog(false);
-      });
-    }
-    if (dangerBtn) {
-      dangerBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (currentKey) {
-          storage.remove(currentKey);
-          lyricsData = [];
-          dynamicLines = null;
-          duetSubDynamicLines = null;
-          _duetExcludedTimes = new Set();
-          lyricsCandidates = null;
-          selectedCandidateId = null;
-          lyricsRequests = null;
-          lyricsConfig = null;
-          lyricsLockState = null;
-          setLyricsMeaningData(null);
-          hideMeaningSummaryPopup();
-          renderLyrics([]);
-          refreshCandidateMenu();
-          refreshLockMenu();
-          refreshMeaningUi();
-        }
-        toggleDialog(false);
-      });
-    }
-    if (!deleteDialogGlobalSetup) {
-      deleteDialogGlobalSetup = true;
-      document.addEventListener('click', (ev) => {
-        if (!ui.deleteDialog) return;
-        if (!ui.deleteDialog.classList.contains('visible')) return;
-        if (ui.deleteDialog.contains(ev.target) || trashBtn.contains(ev.target)) return;
-        ui.deleteDialog.classList.remove('visible');
-      }, true);
-    }
   }
+  if (dangerBtn) {
+    dangerBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (currentKey) {
+        storage.remove(currentKey);
+        lyricsData = [];
+        dynamicLines = null;
+        duetSubDynamicLines = null;
+        _duetExcludedTimes = new Set();
+        lyricsCandidates = null;
+        selectedCandidateId = null;
+        lyricsRequests = null;
+        lyricsConfig = null;
+        lyricsLockState = null;
+        setLyricsMeaningData(null);
+        hideMeaningSummaryPopup();
+        renderLyrics([]);
+        refreshCandidateMenu();
+        refreshLockMenu();
+        refreshMeaningUi();
+      }
+      toggleDialog(false);
+    });
+  }
+  if (!deleteDialogGlobalSetup) {
+    deleteDialogGlobalSetup = true;
+    document.addEventListener('click', (ev) => {
+      if (!ui.deleteDialog) return;
+      if (!ui.deleteDialog.classList.contains('visible')) return;
+      if (ui.deleteDialog.contains(ev.target) || trashBtn.contains(ev.target)) return;
+      ui.deleteDialog.classList.remove('visible');
+    }, true);
+  }
+}
 
-  function setupLangPills(groupId, currentValue, onChange) {
-    const group = document.getElementById(groupId);
-    if (!group) return;
-    const pills = Array.from(group.querySelectorAll('.ytm-lang-pill'));
-    const apply = () => {
-      pills.forEach(p => {
-        p.classList.toggle('active', p.dataset.value === currentValue);
-      });
-    };
-    apply();
+function setupLangPills(groupId, currentValue, onChange) {
+  const group = document.getElementById(groupId);
+  if (!group) return;
+  const pills = Array.from(group.querySelectorAll('.ytm-lang-pill'));
+  const apply = () => {
     pills.forEach(p => {
-      p.onclick = (e) => {
-        e.stopPropagation();
-        currentValue = p.dataset.value;
-        apply();
-        onChange(currentValue);
-      };
+      p.classList.toggle('active', p.dataset.value === currentValue);
     });
-  }
+  };
+  apply();
+  pills.forEach(p => {
+    p.onclick = (e) => {
+      e.stopPropagation();
+      currentValue = p.dataset.value;
+      apply();
+      onChange(currentValue);
+    };
+  });
+}
 
-  async function initSettings() {
-    if (ui.settings) return;
-    ui.settings = createEl('div', 'ytm-settings-panel', '', ``);
-    document.body.appendChild(ui.settings);
+async function initSettings() {
+  if (ui.settings) return;
+  ui.settings = createEl('div', 'ytm-settings-panel', '', ``);
+  document.body.appendChild(ui.settings);
 
-    if (!config.deepLKey) config.deepLKey = await storage.get('ytm_deepl_key');
-    const cachedTrans = await storage.get('ytm_trans_enabled');
-    if (cachedTrans !== null && cachedTrans !== undefined) config.useTrans = cachedTrans;
+  if (!config.deepLKey) config.deepLKey = await storage.get('ytm_deepl_key');
+  const cachedTrans = await storage.get('ytm_trans_enabled');
+  if (cachedTrans !== null && cachedTrans !== undefined) config.useTrans = cachedTrans;
 
-    const cachedSharedTrans = await storage.get('ytm_shared_trans_enabled');
-    if (cachedSharedTrans !== null && cachedSharedTrans !== undefined) config.useSharedTranslateApi = cachedSharedTrans;
+  const cachedSharedTrans = await storage.get('ytm_shared_trans_enabled');
+  if (cachedSharedTrans !== null && cachedSharedTrans !== undefined) config.useSharedTranslateApi = cachedSharedTrans;
 
-    const mainLangStored = await storage.get('ytm_main_lang');
-    if (mainLangStored) config.mainLang = mainLangStored;
-    const subLangStored = await storage.get('ytm_sub_lang');
-    if (subLangStored !== null) config.subLang = subLangStored;
-    const uiLangStored = await storage.get('ytm_ui_lang');
-    if (uiLangStored) config.uiLang = uiLangStored;
+  const mainLangStored = await storage.get('ytm_main_lang');
+  if (mainLangStored) config.mainLang = mainLangStored;
+  const subLangStored = await storage.get('ytm_sub_lang');
+  if (subLangStored !== null) config.subLang = subLangStored;
+  const uiLangStored = await storage.get('ytm_ui_lang');
+  if (uiLangStored) config.uiLang = uiLangStored;
 
-    const offsetStored = await storage.get('ytm_sync_offset');
-    if (offsetStored !== null) config.syncOffset = offsetStored;
-    const saveOffsetStored = await storage.get('ytm_save_sync_offset');
-    if (saveOffsetStored !== null) config.saveSyncOffset = saveOffsetStored;
-    const lrclibFallbackStored = await storage.get('ytm_lrclib_fallback');
-    if (lrclibFallbackStored !== null) config.useLrcLibFallback = lrclibFallbackStored;
-    const animatedCaptionStored = await storage.get('ytm_animated_captions_enabled');
-    if (animatedCaptionStored !== null) config.useAnimatedCaptions = !!animatedCaptionStored;
+  const offsetStored = await storage.get('ytm_sync_offset');
+  if (offsetStored !== null) config.syncOffset = offsetStored;
+  const saveOffsetStored = await storage.get('ytm_save_sync_offset');
+  if (saveOffsetStored !== null) config.saveSyncOffset = saveOffsetStored;
+  const lrclibFallbackStored = await storage.get('ytm_lrclib_fallback');
+  if (lrclibFallbackStored !== null) config.useLrcLibFallback = lrclibFallbackStored;
+  const animatedCaptionStored = await storage.get('ytm_animated_captions_enabled');
+  if (animatedCaptionStored !== null) config.useAnimatedCaptions = !!animatedCaptionStored;
 
-    // ★スライダー初期値反映
-    const weightStored = await storage.get('ytm_lyric_weight');
-    if (weightStored) config.lyricWeight = weightStored;
-    const brightStored = await storage.get('ytm_bg_brightness');
-    if (brightStored) config.bgBrightness = brightStored;
+  // ★スライダー初期値反映
+  const weightStored = await storage.get('ytm_lyric_weight');
+  if (weightStored) config.lyricWeight = weightStored;
+  const brightStored = await storage.get('ytm_bg_brightness');
+  if (brightStored) config.bgBrightness = brightStored;
 
-    renderSettingsPanel();
+  renderSettingsPanel();
 
-    if (!settingsOutsideClickSetup) {
-      settingsOutsideClickSetup = true;
-      document.addEventListener('click', (ev) => {
-        if (!ui.settings) return;
-        if (!ui.settings.classList.contains('active')) return;
-        if (ui.settings.contains(ev.target)) return;
-        if (ui.settingsBtn && ui.settingsBtn.contains(ev.target)) return;
+  if (!settingsOutsideClickSetup) {
+    settingsOutsideClickSetup = true;
+    document.addEventListener('click', (ev) => {
+      if (!ui.settings) return;
+      if (!ui.settings.classList.contains('active')) return;
+      if (ui.settings.contains(ev.target)) return;
+      if (ui.settingsBtn && ui.settingsBtn.contains(ev.target)) return;
+      ui.settings.classList.remove('active');
+    }, true);
+
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && ui.settings && ui.settings.classList.contains('active')) {
         ui.settings.classList.remove('active');
-      }, true);
-
-      document.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Escape' && ui.settings && ui.settings.classList.contains('active')) {
-          ui.settings.classList.remove('active');
-        }
-      });
-    }
-  }
-
-
-    // ===== 共有翻訳: 残り文字数表示 =====
-  const COMMUNITY_REMAINING_TTL_MS = 60 * 1000; // 60s
-  let communityRemainingCache = { ts: 0, data: null, error: null };
-  let communityRemainingTimer = null;
-
-  function ensureCommunityRemainingTimer() {
-    if (communityRemainingTimer) return;
-    communityRemainingTimer = setInterval(() => {
-      try {
-        // 設定パネルが開いているときだけ更新（無駄な通信を減らす）
-        if (ui.settings && ui.settings.classList.contains('active')) {
-          updateCommunityRemainingUI(false);
-        }
-      } catch (_) { }
-    }, 60 * 1000);
-  }
-
-  async function getCommunityRemaining(force = false) {
-    const now = Date.now();
-    if (!force && communityRemainingCache.data && (now - communityRemainingCache.ts) < COMMUNITY_REMAINING_TTL_MS) {
-      return communityRemainingCache.data;
-    }
-
-    if (!EXT || !EXT.runtime || typeof EXT.runtime.sendMessage !== 'function') {
-      throw new Error('extension runtime is not available');
-    }
-
-    const resp = await new Promise((resolve) => {
-      try {
-        EXT.runtime.sendMessage({ type: 'GET_COMMUNITY_REMAINING' }, (r) => resolve(r));
-      } catch (e) {
-        resolve(null);
       }
     });
-
-    if (!resp || !resp.ok) {
-      const msg = resp && resp.error ? resp.error : 'failed';
-      communityRemainingCache = { ts: now, data: null, error: msg };
-      throw new Error(msg);
-    }
-
-    const data = resp.data || resp.remaining || resp;
-    communityRemainingCache = { ts: now, data, error: null };
-    return data;
   }
+}
 
-  async function updateCommunityRemainingUI(force = false) {
-    const valEl = document.getElementById('community-remaining-val');
-        if (!valEl) return;
 
-    // 初回だけ「取得中…」
-    if (!valEl.textContent || valEl.textContent === '--') {
-      valEl.textContent = '取得中…';
-    }
+// ===== 共有翻訳: 残り文字数表示 =====
+const COMMUNITY_REMAINING_TTL_MS = 60 * 1000; // 60s
+let communityRemainingCache = { ts: 0, data: null, error: null };
+let communityRemainingTimer = null;
 
+function ensureCommunityRemainingTimer() {
+  if (communityRemainingTimer) return;
+  communityRemainingTimer = setInterval(() => {
     try {
-      const data = await getCommunityRemaining(force);
-
-      const remaining =
-        (data && (data.total_remaining ?? data.totalRemaining ?? data.total_remaining_total ?? data.total ?? data.free_remaining_total)) ?? null;
-
-      if (remaining != null && !Number.isNaN(Number(remaining))) {
-        valEl.textContent = Number(remaining).toLocaleString();
-      } else {
-        valEl.textContent = '--';
+      // 設定パネルが開いているときだけ更新（無駄な通信を減らす）
+      if (ui.settings && ui.settings.classList.contains('active')) {
+        updateCommunityRemainingUI(false);
       }
+    } catch (_) { }
+  }, 60 * 1000);
+}
 
-      // 生データは hover で見れるように
-      try {
-        valEl.title = JSON.stringify(data, null, 2);
-      } catch (_) { }
-    } catch (e) {
-      valEl.textContent = '--';
-      valEl.title = e && e.message ? e.message : String(e);
-    }
+async function getCommunityRemaining(force = false) {
+  const now = Date.now();
+  if (!force && communityRemainingCache.data && (now - communityRemainingCache.ts) < COMMUNITY_REMAINING_TTL_MS) {
+    return communityRemainingCache.data;
   }
+
+  if (!EXT || !EXT.runtime || typeof EXT.runtime.sendMessage !== 'function') {
+    throw new Error('extension runtime is not available');
+  }
+
+  const resp = await new Promise((resolve) => {
+    try {
+      EXT.runtime.sendMessage({ type: 'GET_COMMUNITY_REMAINING' }, (r) => resolve(r));
+    } catch (e) {
+      resolve(null);
+    }
+  });
+
+  if (!resp || !resp.ok) {
+    const msg = resp && resp.error ? resp.error : 'failed';
+    communityRemainingCache = { ts: now, data: null, error: msg };
+    throw new Error(msg);
+  }
+
+  const data = resp.data || resp.remaining || resp;
+  communityRemainingCache = { ts: now, data, error: null };
+  return data;
+}
+
+async function updateCommunityRemainingUI(force = false) {
+  const valEl = document.getElementById('community-remaining-val');
+  if (!valEl) return;
+
+  // 初回だけ「取得中…」
+  if (!valEl.textContent || valEl.textContent === '--') {
+    valEl.textContent = '取得中…';
+  }
+
+  try {
+    const data = await getCommunityRemaining(force);
+
+    const remaining =
+      (data && (data.total_remaining ?? data.totalRemaining ?? data.total_remaining_total ?? data.total ?? data.free_remaining_total)) ?? null;
+
+    if (remaining != null && !Number.isNaN(Number(remaining))) {
+      valEl.textContent = Number(remaining).toLocaleString();
+    } else {
+      valEl.textContent = '--';
+    }
+
+    // 生データは hover で見れるように
+    try {
+      valEl.title = JSON.stringify(data, null, 2);
+    } catch (_) { }
+  } catch (e) {
+    valEl.textContent = '--';
+    valEl.title = e && e.message ? e.message : String(e);
+  }
+}
 
 function renderSettingsPanel() {
-    if (!ui.settings) return;
+  if (!ui.settings) return;
 
-    // 現在の曲IDがあるか確認（キャッシュ削除ボタンの制御用）
-    const hasCurrentSong = !!currentKey;
+  // 現在の曲IDがあるか確認（キャッシュ削除ボタンの制御用）
+  const hasCurrentSong = !!currentKey;
 
-    // --- SVG Icons ---
-    const ICONS = {
-      visuals: `<svg viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5 11 5.67 11 6.5 10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5S18.33 12 17.5 12z"/></svg>`,
-      trans: `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg>`,
-      data: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`,
-      save: `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z"/></svg>`,
-      trash: `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`
-    };
+  // --- SVG Icons ---
+  const ICONS = {
+    visuals: `<svg viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5 11 5.67 11 6.5 10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5S18.33 12 17.5 12z"/></svg>`,
+    trans: `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg>`,
+    data: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`,
+    save: `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z"/></svg>`,
+    trash: `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`
+  };
 
-    ui.settings.innerHTML = `
+  ui.settings.innerHTML = `
       <div class="settings-tabs">
         <div class="settings-tabs-header">Settings</div>
         <button class="settings-tab-btn active" data-tab="visuals">
@@ -3583,171 +3604,171 @@ function renderSettingsPanel() {
         </div>
       </div>
     `;
-    // --- Tab Switching Logic ---
-    const tabs = ui.settings.querySelectorAll('.settings-tab-btn');
-    const panels = ui.settings.querySelectorAll('.settings-panel');
+  // --- Tab Switching Logic ---
+  const tabs = ui.settings.querySelectorAll('.settings-tab-btn');
+  const panels = ui.settings.querySelectorAll('.settings-panel');
 
-    tabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        tabs.forEach(t => t.classList.remove('active'));
-        panels.forEach(p => p.classList.remove('active'));
-        
-        tab.classList.add('active');
-        const tabId = tab.getAttribute('data-tab');
-        ui.settings.querySelector(`#panel-${tabId}`).classList.add('active');
-      });
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      panels.forEach(p => p.classList.remove('active'));
+
+      tab.classList.add('active');
+      const tabId = tab.getAttribute('data-tab');
+      ui.settings.querySelector(`#panel-${tabId}`).classList.add('active');
     });
-    
-    
-    // 値の反映
-    document.getElementById('deepl-key-input').value = config.deepLKey || '';
-    document.getElementById('trans-toggle').checked = config.useTrans;
-    document.getElementById('shared-trans-toggle').checked = !!config.useSharedTranslateApi;
-    document.getElementById('left-align-toggle').checked = !!config.leftAlignInfo;
-    document.getElementById('apple-bg-toggle').checked = !!config.appleBg;
-    document.getElementById('animated-caption-toggle').checked = !!config.useAnimatedCaptions;
-    document.getElementById('lrclib-fallback-toggle').checked = !!config.useLrcLibFallback;
+  });
 
-    // 共有翻訳の残り文字数（保存済み値を表示）
-    updateCommunityRemainingUI(true);
-    ensureCommunityRemainingTimer();
-    document.getElementById('sync-offset-input').valueAsNumber = config.syncOffset || 0;
-    document.getElementById('sync-offset-save-toggle').checked = config.saveSyncOffset;
 
-    // スライダーイベント設定
-    const wSlider = document.getElementById('weight-slider');
-    const bSlider = document.getElementById('bright-slider');
-    if (wSlider) {
-      wSlider.addEventListener('input', (e) => {
-        const val = e.target.value;
-        document.getElementById('weight-val').textContent = val;
-        config.lyricWeight = val;
-        document.documentElement.style.setProperty('--ytm-lyric-weight', val);
-      });
-    }
-    if (bSlider) {
-      bSlider.addEventListener('input', (e) => {
-        const val = e.target.value;
-        document.getElementById('bright-val').textContent = Math.round(val * 100) + '%';
-        document.documentElement.style.setProperty('--ytm-bg-brightness', val);
-      });
-    }
+  // 値の反映
+  document.getElementById('deepl-key-input').value = config.deepLKey || '';
+  document.getElementById('trans-toggle').checked = config.useTrans;
+  document.getElementById('shared-trans-toggle').checked = !!config.useSharedTranslateApi;
+  document.getElementById('left-align-toggle').checked = !!config.leftAlignInfo;
+  document.getElementById('apple-bg-toggle').checked = !!config.appleBg;
+  document.getElementById('animated-caption-toggle').checked = !!config.useAnimatedCaptions;
+  document.getElementById('lrclib-fallback-toggle').checked = !!config.useLrcLibFallback;
 
-    // 言語ピル設定
-    setupLangPills('main-lang-group', config.mainLang, v => { config.mainLang = v; });
-    setupLangPills('sub-lang-group', config.subLang, v => { config.subLang = v; });
-    refreshUiLangGroup();
+  // 共有翻訳の残り文字数（保存済み値を表示）
+  updateCommunityRemainingUI(true);
+  ensureCommunityRemainingTimer();
+  document.getElementById('sync-offset-input').valueAsNumber = config.syncOffset || 0;
+  document.getElementById('sync-offset-save-toggle').checked = config.saveSyncOffset;
 
-    // 閉じるボタン
-    const closeBtn = document.getElementById('ytm-settings-close-btn');
-    if (closeBtn) {
-      closeBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        ui.settings.classList.remove('active');
-      };
-    }
-
-    // 保存ボタンの処理
-    document.getElementById('save-settings-btn').onclick = async () => {
-      const savedMainLang = await storage.get('ytm_main_lang');
-      const savedSubLang = await storage.get('ytm_sub_lang');
-      const savedUseTrans = await storage.get('ytm_trans_enabled');
-      const savedSharedTrans = await storage.get('ytm_shared_trans_enabled');
-      const savedUiLang = await storage.get('ytm_ui_lang');
-      const savedAnimatedCaptions = await storage.get('ytm_animated_captions_enabled');
-
-      const prevMainLang = savedMainLang || 'original';
-      const prevSubLang = savedSubLang !== null ? savedSubLang : 'en';
-      const prevUseTrans = savedUseTrans !== null ? savedUseTrans : true;
-      const prevUseSharedTrans = savedSharedTrans !== null ? savedSharedTrans : false;
-      const prevUiLang = savedUiLang || (config.uiLang || 'ja');
-      const prevAnimatedCaptions = savedAnimatedCaptions !== null ? !!savedAnimatedCaptions : false;
-
-      // 画面から値を取得
-      config.deepLKey = document.getElementById('deepl-key-input').value.trim();
-      config.useTrans = document.getElementById('trans-toggle').checked;
-      config.useSharedTranslateApi = document.getElementById('shared-trans-toggle').checked;
-      config.leftAlignInfo = document.getElementById('left-align-toggle').checked;
-      config.appleBg = document.getElementById('apple-bg-toggle').checked;
-      config.useAnimatedCaptions = document.getElementById('animated-caption-toggle').checked;
-      config.useLrcLibFallback = document.getElementById('lrclib-fallback-toggle').checked;
-      config.lyricWeight = document.getElementById('weight-slider').value;
-      config.bgBrightness = document.getElementById('bright-slider').value;
-      
-      const offsetVal = document.getElementById('sync-offset-input').valueAsNumber;
-      config.syncOffset = isNaN(offsetVal) ? 0 : offsetVal;
-      config.saveSyncOffset = document.getElementById('sync-offset-save-toggle').checked;
-
-      // ストレージに保存
-      storage.set('ytm_deepl_key', config.deepLKey);
-      storage.set('ytm_trans_enabled', config.useTrans);
-      storage.set('ytm_shared_trans_enabled', config.useSharedTranslateApi);
-      storage.set('ytm_left_align', config.leftAlignInfo);
-      document.body.classList.toggle('ytm-align-left', !!config.leftAlignInfo);
-      
-      storage.set('ytm_apple_bg', config.appleBg);
-      storage.set('ytm_animated_captions_enabled', config.useAnimatedCaptions);
-      storage.set('ytm_lrclib_fallback', config.useLrcLibFallback);
-      document.body.classList.toggle('ytm-apple-bg', !!config.appleBg);
-      storage.set('ytm_main_lang', config.mainLang);
-      storage.set('ytm_sub_lang', config.subLang);
-      storage.set('ytm_ui_lang', config.uiLang);
-      storage.set('ytm_lyric_weight', config.lyricWeight);
-      storage.set('ytm_bg_brightness', config.bgBrightness);
-      storage.set('ytm_sync_offset', config.syncOffset);
-      storage.set('ytm_save_sync_offset', config.saveSyncOffset);
-
-      const needReload = (
-        prevMainLang !== config.mainLang ||
-        prevSubLang !== config.subLang ||
-        prevUseTrans !== config.useTrans ||
-        prevUseSharedTrans !== config.useSharedTranslateApi ||
-        prevUiLang !== config.uiLang ||
-        prevAnimatedCaptions !== config.useAnimatedCaptions
-      );
-
-      if (needReload) {
-        alert(t('settings_saved'));
-        location.reload();
-      } else {
-        showToast(t('settings_saved'));
-        ui.settings.classList.remove('active');
-      }
-    };
-
-    // リセットボタン
-    document.getElementById('clear-all-btn').onclick = storage.clear;
-
-    // キャッシュ削除ボタンの処理
-    const delBtn = document.getElementById('delete-current-cache-btn');
-    if (delBtn) {
-      delBtn.onclick = async () => {
-        if (!currentKey) return;
-        if (confirm('現在の曲の歌詞キャッシュを削除しますか？\n（歌詞データ、同期情報などがリセットされます）')) {
-          await storage.remove(currentKey);
-          
-          lyricsData = [];
-          dynamicLines = null;
-          duetSubDynamicLines = null;
-          _duetExcludedTimes = new Set();
-          lyricsCandidates = null;
-          selectedCandidateId = null;
-          lyricsRequests = null;
-          lyricsConfig = null;
-          lyricsLockState = null;
-          
-          renderLyrics([]);
-          refreshCandidateMenu();
-          refreshLockMenu();
-          
-          showToast('歌詞キャッシュを削除しました');
-        }
-      };
-    }
+  // スライダーイベント設定
+  const wSlider = document.getElementById('weight-slider');
+  const bSlider = document.getElementById('bright-slider');
+  if (wSlider) {
+    wSlider.addEventListener('input', (e) => {
+      const val = e.target.value;
+      document.getElementById('weight-val').textContent = val;
+      config.lyricWeight = val;
+      document.documentElement.style.setProperty('--ytm-lyric-weight', val);
+    });
+  }
+  if (bSlider) {
+    bSlider.addEventListener('input', (e) => {
+      const val = e.target.value;
+      document.getElementById('bright-val').textContent = Math.round(val * 100) + '%';
+      document.documentElement.style.setProperty('--ytm-bg-brightness', val);
+    });
   }
 
-  function createReplayPanel() {
-    ui.replayPanel = createEl('div', 'ytm-replay-panel', '', `
+  // 言語ピル設定
+  setupLangPills('main-lang-group', config.mainLang, v => { config.mainLang = v; });
+  setupLangPills('sub-lang-group', config.subLang, v => { config.subLang = v; });
+  refreshUiLangGroup();
+
+  // 閉じるボタン
+  const closeBtn = document.getElementById('ytm-settings-close-btn');
+  if (closeBtn) {
+    closeBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      ui.settings.classList.remove('active');
+    };
+  }
+
+  // 保存ボタンの処理
+  document.getElementById('save-settings-btn').onclick = async () => {
+    const savedMainLang = await storage.get('ytm_main_lang');
+    const savedSubLang = await storage.get('ytm_sub_lang');
+    const savedUseTrans = await storage.get('ytm_trans_enabled');
+    const savedSharedTrans = await storage.get('ytm_shared_trans_enabled');
+    const savedUiLang = await storage.get('ytm_ui_lang');
+    const savedAnimatedCaptions = await storage.get('ytm_animated_captions_enabled');
+
+    const prevMainLang = savedMainLang || 'original';
+    const prevSubLang = savedSubLang !== null ? savedSubLang : 'en';
+    const prevUseTrans = savedUseTrans !== null ? savedUseTrans : true;
+    const prevUseSharedTrans = savedSharedTrans !== null ? savedSharedTrans : false;
+    const prevUiLang = savedUiLang || (config.uiLang || 'ja');
+    const prevAnimatedCaptions = savedAnimatedCaptions !== null ? !!savedAnimatedCaptions : false;
+
+    // 画面から値を取得
+    config.deepLKey = document.getElementById('deepl-key-input').value.trim();
+    config.useTrans = document.getElementById('trans-toggle').checked;
+    config.useSharedTranslateApi = document.getElementById('shared-trans-toggle').checked;
+    config.leftAlignInfo = document.getElementById('left-align-toggle').checked;
+    config.appleBg = document.getElementById('apple-bg-toggle').checked;
+    config.useAnimatedCaptions = document.getElementById('animated-caption-toggle').checked;
+    config.useLrcLibFallback = document.getElementById('lrclib-fallback-toggle').checked;
+    config.lyricWeight = document.getElementById('weight-slider').value;
+    config.bgBrightness = document.getElementById('bright-slider').value;
+
+    const offsetVal = document.getElementById('sync-offset-input').valueAsNumber;
+    config.syncOffset = isNaN(offsetVal) ? 0 : offsetVal;
+    config.saveSyncOffset = document.getElementById('sync-offset-save-toggle').checked;
+
+    // ストレージに保存
+    storage.set('ytm_deepl_key', config.deepLKey);
+    storage.set('ytm_trans_enabled', config.useTrans);
+    storage.set('ytm_shared_trans_enabled', config.useSharedTranslateApi);
+    storage.set('ytm_left_align', config.leftAlignInfo);
+    document.body.classList.toggle('ytm-align-left', !!config.leftAlignInfo);
+
+    storage.set('ytm_apple_bg', config.appleBg);
+    storage.set('ytm_animated_captions_enabled', config.useAnimatedCaptions);
+    storage.set('ytm_lrclib_fallback', config.useLrcLibFallback);
+    document.body.classList.toggle('ytm-apple-bg', !!config.appleBg);
+    storage.set('ytm_main_lang', config.mainLang);
+    storage.set('ytm_sub_lang', config.subLang);
+    storage.set('ytm_ui_lang', config.uiLang);
+    storage.set('ytm_lyric_weight', config.lyricWeight);
+    storage.set('ytm_bg_brightness', config.bgBrightness);
+    storage.set('ytm_sync_offset', config.syncOffset);
+    storage.set('ytm_save_sync_offset', config.saveSyncOffset);
+
+    const needReload = (
+      prevMainLang !== config.mainLang ||
+      prevSubLang !== config.subLang ||
+      prevUseTrans !== config.useTrans ||
+      prevUseSharedTrans !== config.useSharedTranslateApi ||
+      prevUiLang !== config.uiLang ||
+      prevAnimatedCaptions !== config.useAnimatedCaptions
+    );
+
+    if (needReload) {
+      alert(t('settings_saved'));
+      location.reload();
+    } else {
+      showToast(t('settings_saved'));
+      ui.settings.classList.remove('active');
+    }
+  };
+
+  // リセットボタン
+  document.getElementById('clear-all-btn').onclick = storage.clear;
+
+  // キャッシュ削除ボタンの処理
+  const delBtn = document.getElementById('delete-current-cache-btn');
+  if (delBtn) {
+    delBtn.onclick = async () => {
+      if (!currentKey) return;
+      if (confirm('現在の曲の歌詞キャッシュを削除しますか？\n（歌詞データ、同期情報などがリセットされます）')) {
+        await storage.remove(currentKey);
+
+        lyricsData = [];
+        dynamicLines = null;
+        duetSubDynamicLines = null;
+        _duetExcludedTimes = new Set();
+        lyricsCandidates = null;
+        selectedCandidateId = null;
+        lyricsRequests = null;
+        lyricsConfig = null;
+        lyricsLockState = null;
+
+        renderLyrics([]);
+        refreshCandidateMenu();
+        refreshLockMenu();
+
+        showToast('歌詞キャッシュを削除しました');
+      }
+    };
+  }
+}
+
+function createReplayPanel() {
+  ui.replayPanel = createEl('div', 'ytm-replay-panel', '', `
       <button class="replay-close-btn">×</button>
       <h3>Daily Replay</h3>
       
@@ -3764,130 +3785,130 @@ function renderSettingsPanel() {
       <button id="replay-reset-action" class="replay-footer-btn">${t('settings_reset')} History</button>
     `);
 
-    document.body.appendChild(ui.replayPanel);
+  document.body.appendChild(ui.replayPanel);
 
-    ui.replayPanel.querySelector('.replay-close-btn').onclick = () => {
-      ui.replayPanel.classList.remove('active');
+  ui.replayPanel.querySelector('.replay-close-btn').onclick = () => {
+    ui.replayPanel.classList.remove('active');
+  };
+
+  const pills = ui.replayPanel.querySelectorAll('.ytm-lang-pill');
+  pills.forEach(p => {
+    p.onclick = (e) => {
+      pills.forEach(x => x.classList.remove('active'));
+      e.target.classList.add('active');
+      ui.replayPanel.dataset.range = e.target.dataset.range;
+      ReplayManager.renderUI();
     };
+  });
 
-    const pills = ui.replayPanel.querySelectorAll('.ytm-lang-pill');
-    pills.forEach(p => {
-      p.onclick = (e) => {
-        pills.forEach(x => x.classList.remove('active'));
-        e.target.classList.add('active');
-        ui.replayPanel.dataset.range = e.target.dataset.range;
-        ReplayManager.renderUI();
-      };
-    });
-
-    document.getElementById('replay-reset-action').onclick = async () => {
-      if (confirm(t('replay_reset_confirm'))) {
-        await storage.remove(ReplayManager.HISTORY_KEY);
-        ReplayManager.renderUI();
-      }
-    };
-  }
-
-  // ===================== Artist Seamless Switch =====================
-  const SWITCH_NOISE_KEYWORDS = [
-    '歌ってみた', '弾いてみた', '弾いてみたけど', '踊ってみた', '叩いてみた',
-    '歌われてみた', '演奏してみた', '演奏動画',
-    'cover', 'covered', 'karaoke', 'カラオケ',
-    'acoustic', 'live', 'remix', 'piano',
-    'arrange', 'off vocal', 'instrumental', 'full chorus', 'short ver'
-  ];
-
-  function _switchQueryForMeta(meta) {
-    // Search title only — not title+artist, so we get all versions
-    return (meta?.title || '').trim();
-  }
-
-  function _filterSwitchResults(items, meta) {
-    const titleLower = (meta?.title || '').toLowerCase();
-    return items.filter(item => {
-      const t = (item.title || '').toLowerCase();
-      const ch = (item.channel || '').toLowerCase();
-      // Keep items whose title shares words with the song title (looser check)
-      const titleWords = titleLower.split(/\s+/).filter(w => w.length > 1);
-      const hasTitle = titleWords.some(w => t.includes(w));
-      if (!hasTitle) return false;
-      // Exclude noise keywords
-      for (const kw of SWITCH_NOISE_KEYWORDS) {
-        if (t.includes(kw) || ch.includes(kw)) return false;
-      }
-      return true;
-    });
-  }
-
-  async function searchYTMAlternatives(meta) {
-    const q = _switchQueryForMeta(meta);
-    if (!q) return [];
-    // Use YouTube Music's InnerTube API — same endpoint the web app itself uses
-    try {
-      const resp = await fetch('https://music.youtube.com/youtubei/v1/search?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'X-YouTube-Client-Name': '67', 'X-YouTube-Client-Version': '1.20240101.01.00' },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'WEB_REMIX',
-              clientVersion: '1.20240101.01.00',
-              hl: 'ja',
-              gl: 'JP',
-            }
-          },
-          query: q
-          // No params = search all types (songs, videos, albums, etc.)
-        })
-      });
-      if (!resp.ok) { console.warn('[Switch] InnerTube API error:', resp.status); return []; }
-      const data = await resp.json();
-
-      const results = [];
-      const walk = (obj, depth = 0) => {
-        if (!obj || typeof obj !== 'object' || depth > 30) return;
-        if (obj.musicResponsiveListItemRenderer) {
-          const r = obj.musicResponsiveListItemRenderer;
-          const videoId =
-            r.playlistItemData?.videoId ||
-            r.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId ||
-            r.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.find(x => x.navigationEndpoint?.watchEndpoint)?.navigationEndpoint?.watchEndpoint?.videoId;
-          const title    = r.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text || '';
-          const subtitle = (r.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || []).map(x => x.text).join('');
-          const thumbs   = r.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails || [];
-          const thumb    = thumbs.length ? thumbs[thumbs.length - 1].url : '';
-          if (videoId && title) results.push({ videoId, title, channel: subtitle, thumb });
-          return; // don't descend into an item we already parsed
-        }
-        for (const key of Object.keys(obj)) {
-          const val = obj[key];
-          if (Array.isArray(val)) val.forEach(v => walk(v, depth + 1));
-          else if (val && typeof val === 'object') walk(val, depth + 1);
-        }
-      };
-      walk(data);
-      const seen = new Set();
-      return results.filter(r => { if (seen.has(r.videoId)) return false; seen.add(r.videoId); return true; });
-    } catch (e) {
-      console.error('[Switch] Search failed:', e);
-      return [];
+  document.getElementById('replay-reset-action').onclick = async () => {
+    if (confirm(t('replay_reset_confirm'))) {
+      await storage.remove(ReplayManager.HISTORY_KEY);
+      ReplayManager.renderUI();
     }
+  };
+}
+
+// ===================== Artist Seamless Switch =====================
+const SWITCH_NOISE_KEYWORDS = [
+  '歌ってみた', '弾いてみた', '弾いてみたけど', '踊ってみた', '叩いてみた',
+  '歌われてみた', '演奏してみた', '演奏動画',
+  'cover', 'covered', 'karaoke', 'カラオケ',
+  'acoustic', 'live', 'remix', 'piano',
+  'arrange', 'off vocal', 'instrumental', 'full chorus', 'short ver'
+];
+
+function _switchQueryForMeta(meta) {
+  // Search title only — not title+artist, so we get all versions
+  return (meta?.title || '').trim();
+}
+
+function _filterSwitchResults(items, meta) {
+  const titleLower = (meta?.title || '').toLowerCase();
+  return items.filter(item => {
+    const t = (item.title || '').toLowerCase();
+    const ch = (item.channel || '').toLowerCase();
+    // Keep items whose title shares words with the song title (looser check)
+    const titleWords = titleLower.split(/\s+/).filter(w => w.length > 1);
+    const hasTitle = titleWords.some(w => t.includes(w));
+    if (!hasTitle) return false;
+    // Exclude noise keywords
+    for (const kw of SWITCH_NOISE_KEYWORDS) {
+      if (t.includes(kw) || ch.includes(kw)) return false;
+    }
+    return true;
+  });
+}
+
+async function searchYTMAlternatives(meta) {
+  const q = _switchQueryForMeta(meta);
+  if (!q) return [];
+  // Use YouTube Music's InnerTube API — same endpoint the web app itself uses
+  try {
+    const resp = await fetch('https://music.youtube.com/youtubei/v1/search?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-YouTube-Client-Name': '67', 'X-YouTube-Client-Version': '1.20240101.01.00' },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: 'WEB_REMIX',
+            clientVersion: '1.20240101.01.00',
+            hl: 'ja',
+            gl: 'JP',
+          }
+        },
+        query: q
+        // No params = search all types (songs, videos, albums, etc.)
+      })
+    });
+    if (!resp.ok) { console.warn('[Switch] InnerTube API error:', resp.status); return []; }
+    const data = await resp.json();
+
+    const results = [];
+    const walk = (obj, depth = 0) => {
+      if (!obj || typeof obj !== 'object' || depth > 30) return;
+      if (obj.musicResponsiveListItemRenderer) {
+        const r = obj.musicResponsiveListItemRenderer;
+        const videoId =
+          r.playlistItemData?.videoId ||
+          r.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId ||
+          r.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.find(x => x.navigationEndpoint?.watchEndpoint)?.navigationEndpoint?.watchEndpoint?.videoId;
+        const title = r.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text || '';
+        const subtitle = (r.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || []).map(x => x.text).join('');
+        const thumbs = r.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails || [];
+        const thumb = thumbs.length ? thumbs[thumbs.length - 1].url : '';
+        if (videoId && title) results.push({ videoId, title, channel: subtitle, thumb });
+        return; // don't descend into an item we already parsed
+      }
+      for (const key of Object.keys(obj)) {
+        const val = obj[key];
+        if (Array.isArray(val)) val.forEach(v => walk(v, depth + 1));
+        else if (val && typeof val === 'object') walk(val, depth + 1);
+      }
+    };
+    walk(data);
+    const seen = new Set();
+    return results.filter(r => { if (seen.has(r.videoId)) return false; seen.add(r.videoId); return true; });
+  } catch (e) {
+    console.error('[Switch] Search failed:', e);
+    return [];
   }
+}
 
 
-  function setupSwitchPanel(triggerBtn) {
-    // Toggle: close if already open
-    const existing = document.getElementById('ytm-switch-panel');
-    if (existing) { existing.remove(); return; }
+function setupSwitchPanel(triggerBtn) {
+  // Toggle: close if already open
+  const existing = document.getElementById('ytm-switch-panel');
+  if (existing) { existing.remove(); return; }
 
-    const meta = getMetadata();
-    if (!meta || !meta.title) { showToast('曲名情報を取得できませんでした'); return; }
+  const meta = getMetadata();
+  if (!meta || !meta.title) { showToast('曲名情報を取得できませんでした'); return; }
 
-    const panel = document.createElement('div');
-    panel.id = 'ytm-switch-panel';
-    panel.className = 'ytm-switch-panel';
-    panel.innerHTML = `
+  const panel = document.createElement('div');
+  panel.id = 'ytm-switch-panel';
+  panel.className = 'ytm-switch-panel';
+  panel.innerHTML = `
       <div class="ytm-switch-header">
         <span>🔄 代替バージョンを検索: ${escHtml(meta.title)}</span>
         <button class="ytm-switch-close" id="ytm-switch-close">✕</button>
@@ -3896,260 +3917,1002 @@ function renderSettingsPanel() {
         <div class="ytm-switch-loading">検索中…</div>
       </div>
     `;
-    document.body.appendChild(panel);
+  document.body.appendChild(panel);
 
-    // Position panel ABOVE the trigger button
-    if (triggerBtn) {
-      const rect = triggerBtn.getBoundingClientRect();
-      const panelWidth = 360;
-      const isMoviemode = triggerBtn.classList.contains("moviemode");
-      let left = rect.left + rect.width / 2 - panelWidth / 2;
-      left = Math.max(8, Math.min(left, window.innerWidth - panelWidth - 8));
-      panel.style.position = 'fixed';
-      panel.style.left = `${left}px`;
-      panel.style.bottom = isMoviemode ?  'auto' : `${(window.innerHeight - rect.top + 10)}px`;
-      panel.style.top = isMoviemode ? `${rect.top - 10 + 65}px` : 'auto';// 65pxはちょうどいい高さオフセット
-      panel.style.right = 'auto';
-    }
-
-    document.getElementById('ytm-switch-close').onclick = () => panel.remove();
-    setTimeout(() => {
-      document.addEventListener('click', function outsideClick(ev) {
-        if (!panel.contains(ev.target) && !ev.target.closest('#ytm-switch-btn')) {
-          panel.remove();
-          document.removeEventListener('click', outsideClick, true);
-        }
-      }, true);
-    }, 100);
-
-    searchYTMAlternatives(meta).then(rawResults => {
-      const results = _filterSwitchResults(rawResults, meta);
-      const listEl = document.getElementById('ytm-switch-list');
-      if (!listEl) return;
-
-      if (!results.length) {
-        // Show all unfiltered results if filter removed everything
-        const fallback = rawResults.slice(0, 10);
-        if (!fallback.length) {
-          listEl.innerHTML = '<div class="ytm-switch-loading">候補が見つかりませんでした</div>';
-          return;
-        }
-        listEl.innerHTML = '<div class="ytm-switch-loading" style="font-size:10px;opacity:0.6;padding:6px 10px">フィルターを緩めて表示しています</div>';
-        renderSwitchItems(listEl, fallback, false);
-        return;
-      }
-      listEl.innerHTML = '';
-      renderSwitchItems(listEl, results, true);
-    });
+  // Position panel ABOVE the trigger button
+  if (triggerBtn) {
+    const rect = triggerBtn.getBoundingClientRect();
+    const panelWidth = 360;
+    const isMoviemode = triggerBtn.classList.contains("moviemode");
+    let left = rect.left + rect.width / 2 - panelWidth / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - panelWidth - 8));
+    panel.style.position = 'fixed';
+    panel.style.left = `${left}px`;
+    panel.style.bottom = isMoviemode ? 'auto' : `${(window.innerHeight - rect.top + 10)}px`;
+    panel.style.top = isMoviemode ? `${rect.top - 10 + 65}px` : 'auto';// 65pxはちょうどいい高さオフセット
+    panel.style.right = 'auto';
   }
 
-  function renderSwitchItems(listEl, items, clearFirst) {
-    if (clearFirst) listEl.innerHTML = '';
-    const video = document.querySelector('video');
-    const currentTime = video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  document.getElementById('ytm-switch-close').onclick = () => panel.remove();
+  setTimeout(() => {
+    document.addEventListener('click', function outsideClick(ev) {
+      if (!panel.contains(ev.target) && !ev.target.closest('#ytm-switch-btn')) {
+        panel.remove();
+        document.removeEventListener('click', outsideClick, true);
+      }
+    }, true);
+  }, 100);
 
-    items.forEach(item => {
-      const row = document.createElement('button');
-      row.className = 'ytm-switch-item';
-      row.innerHTML = `
+  searchYTMAlternatives(meta).then(rawResults => {
+    const results = _filterSwitchResults(rawResults, meta);
+    const listEl = document.getElementById('ytm-switch-list');
+    if (!listEl) return;
+
+    if (!results.length) {
+      // Show all unfiltered results if filter removed everything
+      const fallback = rawResults.slice(0, 10);
+      if (!fallback.length) {
+        listEl.innerHTML = '<div class="ytm-switch-loading">候補が見つかりませんでした</div>';
+        return;
+      }
+      listEl.innerHTML = '<div class="ytm-switch-loading" style="font-size:10px;opacity:0.6;padding:6px 10px">フィルターを緩めて表示しています</div>';
+      renderSwitchItems(listEl, fallback, false);
+      return;
+    }
+    listEl.innerHTML = '';
+    renderSwitchItems(listEl, results, true);
+  });
+}
+
+function renderSwitchItems(listEl, items, clearFirst) {
+  if (clearFirst) listEl.innerHTML = '';
+  const video = document.querySelector('video');
+  const currentTime = video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
+
+  items.forEach(item => {
+    const row = document.createElement('button');
+    row.className = 'ytm-switch-item';
+    row.innerHTML = `
         ${item.thumb ? `<img class="ytm-switch-thumb" src="${escHtml(item.thumb)}" alt="">` : '<div class="ytm-switch-thumb"></div>'}
         <div class="ytm-switch-info">
           <div class="ytm-switch-title">${escHtml(item.title)}</div>
           <div class="ytm-switch-channel">${escHtml(item.channel)}</div>
         </div>
       `;
-      row.onclick = () => {
-        document.getElementById('ytm-switch-panel')?.remove();
-        const t = Math.floor(currentTime);
-        const url = `https://music.youtube.com/watch?v=${item.videoId}&t=${t}s`;
-        location.href = url;
-      };
-      listEl.appendChild(row);
+    row.onclick = () => {
+      document.getElementById('ytm-switch-panel')?.remove();
+      const t = Math.floor(currentTime);
+      const url = `https://music.youtube.com/watch?v=${item.videoId}&t=${t}s`;
+      location.href = url;
+    };
+    listEl.appendChild(row);
+  });
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function initLayout() {
+
+  if (document.getElementById('ytm-custom-wrapper')) {
+    ui.wrapper = document.getElementById('ytm-custom-wrapper');
+    ui.bg = document.getElementById('ytm-custom-bg');
+    ui.lyrics = document.getElementById('my-lyrics-container');
+    ui.meaningPanel = document.getElementById('ytm-meaning-panel');
+    ui.title = document.getElementById('ytm-custom-title');
+    ui.artist = document.getElementById('ytm-custom-artist');
+    ui.artwork = document.getElementById('ytm-artwork-container');
+    ui.btnArea = document.getElementById('ytm-btn-area');
+    ui.meaningBtn = document.getElementById('ytm-meaning-btn');
+    ui.summaryBtn = document.getElementById('ytm-meaning-summary-btn');
+    ui.meaningSummaryBackdrop = document.getElementById('ytm-meaning-summary-backdrop');
+    ui.meaningSummaryDialog = document.getElementById('ytm-meaning-summary-dialog');
+    setupAutoHideEvents();
+    refreshMeaningUi();
+    return;
+  }
+  ui.bg = createEl('div', 'ytm-custom-bg');
+  document.body.appendChild(ui.bg);
+  ui.wrapper = createEl('div', 'ytm-custom-wrapper');
+  const leftCol = createEl('div', 'ytm-custom-left-col');
+  ui.artwork = createEl('div', 'ytm-artwork-container');
+  const info = createEl('div', 'ytm-custom-info-area');
+  ui.title = createEl('div', 'ytm-custom-title');
+  ui.artist = createEl('div', 'ytm-custom-artist');
+  ui.btnArea = createEl('div', 'ytm-btn-area');
+
+  const btns = [];
+  const lyricsBtnConfig = { txt: 'Lyrics', cls: 'lyrics-btn', click: () => { } };
+  const meaningBtnConfig = { txt: '解説', cls: 'meaning-btn', click: () => toggleMeaningPanel() };
+  const summaryBtnConfig = { txt: '要約', cls: 'meaning-summary-btn', click: () => showMeaningSummaryPopup() };
+
+  //  PiPボタン
+  const pipBtnConfig = {
+    txt: 'PIP',
+    cls: 'icon-btn',
+    click: () => PipManager.toggle()
+  };
+
+  const replayBtnConfig = {
+    txt: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/></svg>',
+    cls: 'icon-btn',
+    click: () => {
+      if (!ui.replayPanel) {
+        createReplayPanel();
+      }
+      ui.replayPanel.classList.add('active');
+      ReplayManager.renderUI();
+    }
+  };
+
+
+  const settingsBtnConfig = {
+    txt: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.73 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .43-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.49-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
+    cls: 'icon-btn',
+    click: async () => {
+      initSettings();
+      refreshUiLangGroup();
+      ui.settings.classList.toggle('active');
+    }
+  };
+
+  const switchBtnConfig = {
+    txt: '',
+    cls: 'icon-btn ytm-switch-icon-btn',
+    click: (ev) => setupSwitchPanel(ev.currentTarget)
+  };
+
+  // ボタン配列に追加
+  btns.push(lyricsBtnConfig, meaningBtnConfig, summaryBtnConfig, pipBtnConfig, replayBtnConfig, switchBtnConfig, settingsBtnConfig);
+
+  btns.forEach(b => {
+    const btn = createEl('button', '', `ytm-glass-btn ${b.cls || ''}`, b.txt);
+    btn.onclick = b.click;
+    ui.btnArea.appendChild(btn);
+    if (b === lyricsBtnConfig) {
+      ui.lyricsBtn = btn;
+      setupUploadMenu(btn);
+    }
+    if (b === meaningBtnConfig) {
+      btn.id = 'ytm-meaning-btn';
+      ui.meaningBtn = btn;
+    }
+    if (b === summaryBtnConfig) {
+      btn.id = 'ytm-meaning-summary-btn';
+      ui.summaryBtn = btn;
+    }
+    if (b === switchBtnConfig) {
+      btn.id = 'ytm-switch-btn';
+      // Use the custom icon image
+      try {
+        const iconUrl = chrome.runtime.getURL('src/assets/icons/ArtistChange.png');
+        btn.innerHTML = `<img src="${iconUrl}" style="width:18px;height:18px;object-fit:contain;vertical-align:middle;" alt="ArtistChange">`;
+      } catch (_) { btn.textContent = '🔄'; }
+    }
+    if (b === settingsBtnConfig) ui.settingsBtn = btn;
+  });
+
+  ui.input = createEl('input');
+  ui.input.type = 'file';
+  ui.input.accept = '.lrc,.txt';
+  ui.input.style.display = 'none';
+  ui.input.onchange = handleUpload;
+  document.body.appendChild(ui.input);
+  info.append(ui.title, ui.artist, ui.btnArea);
+  leftCol.append(ui.artwork, info);
+  ui.lyrics = createEl('div', 'my-lyrics-container');
+  ui.meaningPanel = createEl('aside', 'ytm-meaning-panel', 'ytm-meaning-panel');
+  ui.wrapper.append(leftCol, ui.lyrics, ui.meaningPanel);
+  document.body.appendChild(ui.wrapper);
+  ensureMeaningSummaryDialog();
+  refreshMeaningUi();
+  setupAutoHideEvents();
+  setupScrollResumeEvents();
+  if (isYTMPremiumUser()) setupMovieMode(); //moviemode setup
+}
+
+let lyricsLateRetryTimer = null;
+let lyricsLateRetryKey = null;
+const LYRICS_LATE_RETRY_DELAYS_MS = [15000, 30000];
+
+function clearLyricsLateRetry(targetKey = null) {
+  if (targetKey && lyricsLateRetryKey && lyricsLateRetryKey !== targetKey) return;
+  if (lyricsLateRetryTimer) {
+    clearTimeout(lyricsLateRetryTimer);
+    lyricsLateRetryTimer = null;
+  }
+  lyricsLateRetryKey = null;
+}
+
+function scheduleLyricsLateRetry(meta, targetKey, attempt = 0) {
+  if (!targetKey || currentKey !== targetKey) return;
+  if (lyricsLateRetryTimer) return;
+  if (attempt >= LYRICS_LATE_RETRY_DELAYS_MS.length) return;
+
+  const delayMs = LYRICS_LATE_RETRY_DELAYS_MS[attempt];
+  lyricsLateRetryKey = targetKey;
+  lyricsLateRetryTimer = setTimeout(() => {
+    lyricsLateRetryTimer = null;
+    lyricsLateRetryKey = null;
+    if (currentKey !== targetKey) return;
+
+    const metaNow = getMetadata() || meta;
+    if (!metaNow) return;
+    const keyNow = `${metaNow.title}///${metaNow.artist}`;
+    if (keyNow !== targetKey) return;
+
+    loadLyrics(metaNow, { lateRetryAttempt: attempt + 1 });
+  }, delayMs);
+}
+
+async function loadLyrics(meta, options = {}) {
+  if (!config.deepLKey) config.deepLKey = await storage.get('ytm_deepl_key');
+  const cachedTrans = await storage.get('ytm_trans_enabled');
+  if (cachedTrans !== null && cachedTrans !== undefined) config.useTrans = cachedTrans;
+
+  const cachedSharedTrans = await storage.get('ytm_shared_trans_enabled');
+  if (cachedSharedTrans !== null && cachedSharedTrans !== undefined) config.useSharedTranslateApi = cachedSharedTrans;
+  const mainLangStored = await storage.get('ytm_main_lang');
+  const subLangStored = await storage.get('ytm_sub_lang');
+  if (mainLangStored) config.mainLang = mainLangStored;
+  if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
+  const uiLangStored = await storage.get('ytm_ui_lang');
+  if (uiLangStored) config.uiLang = uiLangStored;
+  const lrclibFallbackStored = await storage.get('ytm_lrclib_fallback');
+  if (lrclibFallbackStored !== null) config.useLrcLibFallback = lrclibFallbackStored;
+  const animatedCaptionStored = await storage.get('ytm_animated_captions_enabled');
+  if (animatedCaptionStored !== null && animatedCaptionStored !== undefined) config.useAnimatedCaptions = !!animatedCaptionStored;
+
+  const thisKey = `${meta.title}///${meta.artist}`;
+  if (thisKey !== currentKey) return;
+  let cached = await storage.get(thisKey);
+  dynamicLines = null;
+  duetSubDynamicLines = null;
+  _duetExcludedTimes = new Set();
+  duetSubLyricsRaw = '';
+  lyricsCandidates = null;
+  selectedCandidateId = null;
+  lyricsRequests = null;
+  lyricsConfig = null;
+  lyricsLockState = null;
+  lyricsTranslationMap = {};
+  setLyricsMeaningData(null);
+  let data = null;
+  let noLyricsCached = false;
+  if (cached !== null && cached !== undefined) {
+    if (cached === NO_LYRICS_SENTINEL) {
+      noLyricsCached = true;
+    } else if (typeof cached === 'string') {
+      data = cached;
+    } else if (typeof cached === 'object') {
+      if (config.useAnimatedCaptions && typeof cached.animated_lyrics === 'string' && cached.animated_lyrics.trim()) {
+        data = cached.animated_lyrics;
+      } else if (typeof cached.lyrics === 'string') {
+        data = cached.lyrics;
+      }
+      if (Array.isArray(cached.dynamicLines)) dynamicLines = cached.dynamicLines;
+      if (typeof cached.subLyrics === 'string') duetSubLyricsRaw = cached.subLyrics;
+      if (cached.noLyrics) noLyricsCached = true;
+      if (Array.isArray(cached.candidates)) lyricsCandidates = cached.candidates;
+      if (Array.isArray(cached.requests)) lyricsRequests = cached.requests;
+      if (cached.config) lyricsConfig = cached.config;
+      if (cached.lockState && typeof cached.lockState === 'object') lyricsLockState = cached.lockState;
+      if (cached.lrcMap || cached.translations) {
+        lyricsTranslationMap = {
+          ...normalizeTranslationsToLrcMapLocal(cached.lrcMap),
+          ...normalizeTranslationsToLrcMapLocal(cached.translations)
+        };
+      }
+      if (cached.meaningData) setLyricsMeaningData(cached.meaningData);
+    }
+  }
+  syncLyricsLockState();
+  refreshCandidateMenu();
+  refreshLockMenu();
+  // Always fetch fresh data from URL as requested
+  let gotLyrics = false;
+  try {
+    const track = meta.title.replace(/\s*[\(-\[].*?[\)-]].*/, '');
+    const artist = meta.artist;
+    const youtube_url = getCurrentVideoUrl();
+    const video_id = getCurrentVideoId();
+    const translate_to = getRequestedLrchubTranslateLangs();
+    const payload = { track, artist, youtube_url, video_id, use_lrclib: config.useLrcLibFallback };
+    if (translate_to.length) payload.translate_to = translate_to;
+    const res = await new Promise(resolve => {
+      chrome.runtime.sendMessage(
+        { type: 'GET_LYRICS', payload },
+        resolve
+      );
     });
+    console.log('[CS] GET_LYRICS response:', res);
+    lyricsRequests = Array.isArray(res?.requests) ? res.requests : null;
+    lyricsConfig = res?.config || null;
+    syncLyricsLockState();
+    lyricsCandidates = Array.isArray(res?.candidates) ? res.candidates : null;
+    lyricsTranslationMap = {
+      ...(lyricsTranslationMap || {}),
+      ...normalizeTranslationsToLrcMapLocal(res?.lrcMap),
+      ...normalizeTranslationsToLrcMapLocal(res?.translations)
+    };
+    refreshCandidateMenu();
+    refreshLockMenu();
+    const nextMeaningData = normalizeMeaningPayloadLocal(res);
+    if (nextMeaningData) setLyricsMeaningData(nextMeaningData);
+    if (typeof res?.subLyrics === 'string' && res.subLyrics.trim()) duetSubLyricsRaw = res.subLyrics;
+
+    const responseLyrics = typeof res?.lyrics === 'string' ? res.lyrics : '';
+    const responseAnimatedLyrics = typeof res?.animated_lyrics === 'string' ? res.animated_lyrics : '';
+    const preferredLyrics = (config.useAnimatedCaptions && responseAnimatedLyrics.trim()) ? responseAnimatedLyrics : responseLyrics;
+    if (res?.success && preferredLyrics.trim()) {
+      data = preferredLyrics;
+      gotLyrics = true;
+      if (Array.isArray(res.dynamicLines) && res.dynamicLines.length) dynamicLines = res.dynamicLines;
+      if (thisKey === currentKey) {
+        clearLyricsLateRetry(thisKey);
+        storage.set(thisKey, {
+          lyrics: responseLyrics || data,
+          animated_lyrics: responseAnimatedLyrics || null,
+          dynamicLines: dynamicLines || null,
+          noLyrics: false,
+          subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
+          meaningData: lyricsMeaning || null,
+          candidates: lyricsCandidates || null,
+          lrcMap: lyricsTranslationMap || null,
+          requests: lyricsRequests || null,
+          config: lyricsConfig || null,
+          lockState: lyricsLockState || null
+        });
+      }
+    } else {
+
+    }
+  } catch (e) {
+    console.error('GET_LYRICS failed', e);
+  }
+  if (!gotLyrics && !data && thisKey === currentKey) {
+    storage.set(thisKey, NO_LYRICS_SENTINEL);
+    noLyricsCached = true;
+    scheduleLyricsLateRetry(meta, thisKey, options.lateRetryAttempt || 0);
+  }
+  if (thisKey !== currentKey) return;
+  if (!data) {
+    renderLyrics([]);
+    refreshCandidateMenu();
+    refreshLockMenu();
+    refreshMeaningUi();
+    return;
+  }
+  await applyLyricsText(data);
+}
+
+const optimizeLineBreaks = (text) => {
+  if (!text) return '';
+
+  const segmenter = new Intl.Segmenter('ja', { granularity: 'word' });
+  const segments = Array.from(segmenter.segment(text));
+
+  let html = '';
+  let buffer = '';
+
+  const rules = {
+    suffixes: new Set([
+      'て', 'に', 'を', 'は', 'が', 'の', 'へ', 'と', 'も', 'で', 'や', 'し', 'から', 'より', 'だけ', 'まで', 'こそ', 'さえ', 'でも', 'など', 'なら', 'くらい', 'ぐらい', 'ばかり',
+      'ね', 'よ', 'な', 'さ', 'わ', 'ぞ', 'ぜ', 'かしら', 'かな', 'かも', 'だし', 'もん', 'もの',
+      'って', 'けど', 'けれど', 'のに', 'ので', 'から', 'ため', 'よう', 'こと', 'もの', 'わけ', 'ほう', 'ところ', 'とおり',
+      'た', 'だ', 'ない', 'たい', 'ます', 'ません', 'う', 'よう', 'れる', 'られる', 'せる', 'させる', 'ん', 'ず',
+      'てた', 'てる', 'ちゃう', 'じゃん', 'なきゃ', 'なくちゃ', 'く', 'き', 'けれ', 'れば',
+      'った', 'たら', 'たり',
+      'か', 'かい', 'だい', 'いる', 'ある', 'くる', 'いく', 'みる', 'おく', 'しまう', 'ほしい', 'あげる', 'くれる', 'もらう',
+      '、', '。', '，', '．', '…', '・', '！', '？', '!', '?', '~', '～', '“', '”', '‘', '’', ')', ']', '}', '」', '』', '】', '）'
+    ]),
+
+    isEnglish: (w) => /^[a-zA-Z0-9'\-\.,!?:;]+$/.test(w),
+    isSpace: (w) => /^\s+$/.test(w),
+    isOpenParen: (w) => /^[\(\[\{「『（【]$/.test(w),
+    hasKanji: (w) => /[\u4E00-\u9FFF]/.test(w),
+    isHiragana: (w) => /^[\u3040-\u309F\u30FC]+$/.test(w),
+    isKatakana: (w) => /^[\u30A0-\u30FF\u30FC]+$/.test(w),
+    startsWithSmallKana: (w) => /^[\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085\u3087\u308E\u3095\u3096]/.test(w)
+  };
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const word = seg.segment;
+    const next = segments[i + 1];
+
+    buffer += word;
+
+    if (!next) {
+      html += `<span class="lyric-phrase">${buffer}</span>`;
+      break;
+    }
+
+    const nextWord = next.segment;
+    let shouldMerge = false;
+
+    if (rules.startsWithSmallKana(nextWord)) {
+      shouldMerge = true;
+    }
+    else if (rules.suffixes.has(nextWord)) {
+      if (!rules.isOpenParen(nextWord)) {
+        shouldMerge = true;
+      }
+    }
+
+    else if (rules.hasKanji(word) && rules.isHiragana(nextWord)) {
+      shouldMerge = true;
+    }
+    else if (rules.isKatakana(word) && rules.isKatakana(nextWord)) {
+      shouldMerge = true;
+    }
+    else if ((rules.isEnglish(word) || rules.isSpace(word)) &&
+      (rules.isEnglish(nextWord) || rules.isSpace(nextWord))) {
+      shouldMerge = true;
+    }
+
+    if (shouldMerge) {
+      continue;
+    }
+
+    html += `<span class="lyric-phrase">${buffer}</span>`;
+    buffer = '';
   }
 
-  function escHtml(s) {
-    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return html;
+};
+function renderLyrics(data) {
+  if (!ui.lyrics) return;
+  document.body.classList.remove('ytm-animated-caption-mode');
+  animatedCaptionFrameKey = '';
+  ui.lyrics.innerHTML = '';
+  ui.lyrics.scrollTop = 0;
+  const hasData = Array.isArray(data) && data.length > 0;
+  document.body.classList.toggle('ytm-no-lyrics', !hasData);
+  document.body.classList.toggle('ytm-has-timestamp', hasTimestamp);
+  document.body.classList.toggle('ytm-no-timestamp', !hasTimestamp);
+
+  const fragment = document.createDocumentFragment();
+  const usedMainDynamicIndices = new Set();
+  const usedSubDynamicIndices = new Set();
+
+  data.forEach((line, index) => {
+    const row = createEl('div', '', 'lyric-line');
+
+    if (line && line.duetSide === 'right') {
+      row.classList.add('sub-vocal');
+    } else if (line && line.duetSide === 'left') {
+      row.classList.add('main-vocal');
+    }
+
+    if (line && typeof line === 'object') {
+      line._dynamicRenderStartSec = null;
+      line._dynamicRenderEndSec = null;
+    }
+
+    if (typeof line.time === 'number') {
+      row.dataset.startTime = String(line.time);
+    }
+
+    const mainSpan = createEl('span', '', 'lyric-main');
+
+    // dynamic lyrics highlighting
+    let dyn = null;
+
+    // サブボーカル(right)にはduetSubDynamicLinesを使用、メインにはdynamicLinesを使用
+    if (line && line.duetSide === 'right') {
+      // サブボーカル用のdynamic lines（sub.txtがDynamic LRC形式の場合）
+      if (duetSubDynamicLines && Array.isArray(duetSubDynamicLines) && duetSubDynamicLines.length) {
+        if (typeof line.time === 'number') {
+          dyn = findDynamicLineForRender(line, duetSubDynamicLines, usedSubDynamicIndices);
+        }
+      } else if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
+        // sub.txtが通常LRC形式の場合、メインのDynamic LRCからコンテンツマッチで1文字同期データを取得
+        // → サブボーカル右側も1文字ハイライトに対応（5秒の許容幅+内容一致で検索）
+        if (typeof line.time === 'number') {
+          dyn = findDynamicLineByContent(line, dynamicLines);
+        }
+      }
+    } else {
+      // メインボーカル用のdynamic lines
+      if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
+        if (typeof line.time === 'number') {
+          // 時間で検索
+          dyn = findDynamicLineForRender(line, dynamicLines, usedMainDynamicIndices);
+        } else {
+          // デュエットモード以外のみインデックスフォールバックを使用
+          const isDuetMode = document.body.classList.contains('ytm-duet-mode');
+          if (!isDuetMode) {
+            dyn = dynamicLines[index];
+          }
+        }
+      }
+    }
+
+    if (line && typeof line === 'object' && dyn) {
+      const dynStartSec = getDynamicLineStartSec(dyn);
+      const dynEndSec = getDynamicLineEndSec(dyn);
+      line._dynamicRenderStartSec = typeof dynStartSec === 'number' ? dynStartSec : (
+        typeof line.time === 'number' ? line.time : null
+      );
+      line._dynamicRenderEndSec = typeof dynEndSec === 'number' ? dynEndSec : null;
+
+      if (typeof line._dynamicRenderStartSec === 'number') {
+        row.dataset.dynamicStartTime = String(line._dynamicRenderStartSec);
+      }
+      if (typeof line._dynamicRenderEndSec === 'number') {
+        row.dataset.dynamicEndTime = String(line._dynamicRenderEndSec);
+      }
+    }
+
+    if (dyn && Array.isArray(dyn.chars) && dyn.chars.length) {
+      dyn.chars.forEach((ch, ci) => {
+        const chSpan = createEl('span', '', 'lyric-char');
+        // Preserve spaces
+        const cc = (ch.c === '\t') ? ' ' : ch.c;
+        chSpan.textContent = (cc === ' ') ? '\u00A0' : cc;
+        chSpan.dataset.charIndex = String(ci);
+        if (typeof ch.t === 'number') {
+          chSpan.dataset.time = String(ch.t / 1000);
+        }
+        chSpan.classList.add('char-pending');
+        mainSpan.appendChild(chSpan);
+      });
+    } else {
+      const rawText = line ? line.text : '';
+      mainSpan.innerHTML = optimizeLineBreaks(rawText);
+    }
+    row.appendChild(mainSpan);
+
+    if (line && line.translation) {
+      const subSpan = createEl('span', '', 'lyric-translation', line.translation);
+      row.appendChild(subSpan);
+      row.classList.add('has-translation');
+    }
+
+    row.onclick = () => {
+      if (meaningPanelVisible && line && typeof line.time === 'number') {
+        syncMeaningPanelToPlayback(true, line.time);
+      }
+      if (!hasTimestamp || !line || line.time == null) return;
+      const v = document.querySelector('video');
+      if (v) v.currentTime = line.time + timeOffset;
+    };
+    fragment.appendChild(row);
+  });
+
+  ui.lyrics.appendChild(fragment);
+
+  if (PipManager.pipWindow && PipManager.pipLyricsContainer) {
+    PipManager.pipLyricsContainer.innerHTML = ui.lyrics.innerHTML;
+    if (PipManager.pipWindow.document) {
+      PipManager.pipWindow.document.body.classList.toggle('ytm-no-timestamp', !hasTimestamp);
+    }
+  }
+}
+
+const handleUpload = (e) => {
+  const file = e.target.files[0];
+  if (!file || !currentKey) return;
+  const r = new FileReader();
+  r.onload = (ev) => {
+    storage.set(currentKey, ev.target.result);
+    currentKey = null;
+  };
+  r.readAsText(file);
+  e.target.value = '';
+};
+
+
+function startLyricRafLoop() {
+  if (lyricRafId) cancelAnimationFrame(lyricRafId);
+
+  const loop = () => {
+    const v = document.querySelector('video');
+
+    if (v) {
+
+      if (PipManager.pipWindow) {
+        PipManager.updatePlayState(v.paused);
+      }
+
+      if (v.readyState > 0 && !v.paused && !v.ended) {
+        let t = v.currentTime;
+        const duration = v.duration || 1;
+
+        if (timeOffset > 0 && t < timeOffset) timeOffset = 0;
+        t = Math.max(0, t - timeOffset);
+        t = Math.min(Math.max(0, t + (config.syncOffset / 1000)), v.duration);
+        if (animatedCaptionData && config.useAnimatedCaptions) {
+          updateAnimatedCaptionStage(t);
+        }
+        if (!animatedCaptionData && lyricsData.length && hasTimestamp) {
+          updateLyricHighlight(t);
+        }
+
+
+        if (PipManager.pipWindow && PipManager.progressRing) {
+          const radius = 32;
+          const circumference = radius * 2 * Math.PI;
+          const progress = t / duration;
+          const offset = circumference - (progress * circumference);
+          PipManager.progressRing.style.strokeDashoffset = offset;
+        }
+      }
+    }
+
+    if (PipManager.pipWindow) {
+      lyricRafId = PipManager.pipWindow.requestAnimationFrame(loop);
+    } else {
+      lyricRafId = requestAnimationFrame(loop);
+    }
+  };
+
+  lyricRafId = requestAnimationFrame(loop);
+}
+
+let lastScrolledIndex = -1;
+let isUserScrolling = false;
+let userScrollTimeout = null;
+let isProgrammaticScrolling = false;
+let programmaticScrollTimeout = null;
+let programmaticScrollMaxTimeout = null;
+
+function updateLyricHighlight(currentTime) {
+  if (!lyricsData.length) return;
+  if (!hasTimestamp) return;
+
+  const t = currentTime;
+
+  let idx = -1;
+  let startSearch = Math.max(0, lastActiveIndex);
+
+  // 再生時間が前回の位置より大幅に戻っている場合は最初から検索
+  if (startSearch >= lyricsData.length || (startSearch > 0 && lyricsData[startSearch].time > t + 0.5)) {
+    startSearch = 0;
   }
 
-  function initLayout() {
+  for (let i = startSearch; i < lyricsData.length; i++) {
+    if (lyricsData[i].time > t) {
+      idx = i - 1;
+      break;
+    }
+    if (i === lyricsData.length - 1) idx = i;
+  }
 
-    if (document.getElementById('ytm-custom-wrapper')) {
-      ui.wrapper = document.getElementById('ytm-custom-wrapper');
-      ui.bg = document.getElementById('ytm-custom-bg');
-      ui.lyrics = document.getElementById('my-lyrics-container');
-      ui.meaningPanel = document.getElementById('ytm-meaning-panel');
-      ui.title = document.getElementById('ytm-custom-title');
-      ui.artist = document.getElementById('ytm-custom-artist');
-      ui.artwork = document.getElementById('ytm-artwork-container');
-      ui.btnArea = document.getElementById('ytm-btn-area');
-      ui.meaningBtn = document.getElementById('ytm-meaning-btn');
-      ui.summaryBtn = document.getElementById('ytm-meaning-summary-btn');
-      ui.meaningSummaryBackdrop = document.getElementById('ytm-meaning-summary-backdrop');
-      ui.meaningSummaryDialog = document.getElementById('ytm-meaning-summary-dialog');
-      setupAutoHideEvents();
-      refreshMeaningUi();
+
+
+  const targets = [];
+  if (ui.lyrics) targets.push(ui.lyrics);
+  if (PipManager.pipWindow && PipManager.pipLyricsContainer) {
+    targets.push(PipManager.pipLyricsContainer);
+  }
+
+  const activeIndices = new Set();
+  if (idx >= 0 && idx < lyricsData.length) {
+    activeIndices.add(idx);
+
+    const currentLineTime = lyricsData[idx]?.time;
+    if (typeof currentLineTime === 'number') {
+      for (let i = idx - 1; i >= 0; i--) {
+        if (!isSameTimestamp(lyricsData[i]?.time, currentLineTime)) break;
+        activeIndices.add(i);
+      }
+      for (let i = idx + 1; i < lyricsData.length; i++) {
+        if (!isSameTimestamp(lyricsData[i]?.time, currentLineTime)) break;
+        activeIndices.add(i);
+      }
+    }
+
+    if (activeIndices.size === 1) {
+      const prevIdx = (idx > 0 && idx < lyricsData.length &&
+        typeof lyricsData[idx]?.time === 'number' &&
+        typeof lyricsData[idx - 1]?.time === 'number' &&
+        (lyricsData[idx].time - lyricsData[idx - 1].time) <= 1.0
+      ) ? (idx - 1) : -1;
+
+      if (prevIdx >= 0) {
+        // デュエットモードでduetSideが異なる行（メイン⇔サブ）は追加しない
+        // （1文字追跡タイムスタンプ時にサブボーカルがダブる原因になるため）
+        const currentSide = lyricsData[idx]?.duetSide;
+        const prevSide = lyricsData[prevIdx]?.duetSide;
+        const isDifferentDuetSide = currentSide && prevSide && currentSide !== prevSide;
+        if (!isDifferentDuetSide) {
+          const currentText = normalizeLyricCompareTextStrict(lyricsData[idx]?.text);
+          const prevText = normalizeLyricCompareTextStrict(lyricsData[prevIdx]?.text);
+          const sameDisplayedLyric = !!currentText && !!prevText && scoreLyricTextMatch(currentText, prevText) >= 100;
+          if (!sameDisplayedLyric) activeIndices.add(prevIdx);
+        }
+      }
+    }
+
+    lyricsData.forEach((line, lineIndex) => {
+      if (activeIndices.has(lineIndex)) return;
+      if (!isLineDynamicallyActiveAtTime(line, t)) return;
+      activeIndices.add(lineIndex);
+    });
+
+    if (activeIndices.size > 1) {
+      const activeList = Array.from(activeIndices).sort((a, b) => a - b);
+      activeList.forEach((activeIdx) => {
+        const activeLine = lyricsData[activeIdx];
+        if (activeLine?.duetSide !== 'right') return;
+
+        const activeText = normalizeLyricCompareTextStrict(activeLine?.text);
+        if (!activeText) return;
+
+        const hasMatchingLeft = activeList.some((otherIdx) => {
+          if (otherIdx === activeIdx) return false;
+          const otherLine = lyricsData[otherIdx];
+          if (otherLine?.duetSide !== 'left') return false;
+          // Dynamic LRC（1文字同期）の場合は行の開始時刻が最大5秒ずれる可能性があるため
+          // 許容幅を動的に切り替える（通常LRCはDUET_DUPLICATE_TOLERANCE=1.0sのまま）
+          const dedupeTol = (Array.isArray(dynamicLines) && dynamicLines.length > 0)
+            ? 5.0
+            : DUET_DUPLICATE_TOLERANCE;
+          if (!isSameTimestamp(otherLine?.time, activeLine?.time, dedupeTol)) return false;
+
+          const otherText = normalizeLyricCompareTextStrict(otherLine?.text);
+          return !!otherText && scoreLyricTextMatch(otherText, activeText) >= 100;
+        });
+
+        if (hasMatchingLeft) {
+          activeIndices.delete(activeIdx);
+        }
+      });
+    }
+  }
+
+  targets.forEach(container => {
+    const rows = container.querySelectorAll('.lyric-line');
+    if (rows.length === 0) return;
+
+    rows.forEach((r, i) => {
+      const isActive = activeIndices.has(i);
+      const isPrimary = (i === idx);
+
+      if (isActive) {
+        if (!r.classList.contains('active')) {
+          r.classList.add('active');
+        }
+
+        if (isPrimary && !isUserScrolling && idx !== lastScrolledIndex) {
+          if (container === ui.lyrics) {
+            // 【通常再生画面】
+            // getBoundingClientRect を使って要素の絶対位置から確実なスクロール量を計算
+            const containerRect = container.getBoundingClientRect();
+            const rRect = r.getBoundingClientRect();
+            const targetScroll = container.scrollTop + rRect.top - containerRect.top - (container.clientHeight / 2) + (rRect.height / 2);
+
+            isProgrammaticScrolling = true;
+            clearTimeout(programmaticScrollTimeout);
+            clearTimeout(programmaticScrollMaxTimeout);
+            programmaticScrollTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 150);
+            programmaticScrollMaxTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 1200);
+
+            container.scrollTo({ top: targetScroll, behavior: 'smooth' });
+
+            lastScrolledIndex = idx;
+            ReplayManager.incrementLyricCount();
+          } else {
+            // 【PIP（小窓）】
+            const containerRect = container.getBoundingClientRect();
+            const rRect = r.getBoundingClientRect();
+            const targetScroll = container.scrollTop + rRect.top - containerRect.top - (container.clientHeight * 0.35) + (rRect.height / 2);
+
+            isProgrammaticScrolling = true;
+            clearTimeout(programmaticScrollTimeout);
+            clearTimeout(programmaticScrollMaxTimeout);
+            programmaticScrollTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 150);
+            programmaticScrollMaxTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 1200);
+
+            container.scrollTo({ top: targetScroll, behavior: 'smooth' });
+
+            lastScrolledIndex = idx;
+          }
+        }
+
+        if (r.classList.contains('has-translation')) {
+          r.classList.add('show-translation');
+        }
+
+        const charSpans = r.querySelectorAll('.lyric-char');
+        if (charSpans.length > 0) {
+          charSpans.forEach(sp => {
+            const tt = parseFloat(sp.dataset.time || '0');
+            if (Number.isFinite(tt) && tt <= t) {
+              sp.classList.add('char-active');
+              sp.classList.remove('char-pending');
+            } else {
+              sp.classList.remove('char-active');
+              sp.classList.add('char-pending');
+            }
+          });
+        }
+      } else {
+        r.classList.remove('active');
+        r.classList.remove('show-translation');
+
+        const charSpans = r.querySelectorAll('.lyric-char');
+        if (charSpans.length > 0) {
+          charSpans.forEach(sp => {
+            sp.classList.remove('char-active');
+            sp.classList.add('char-pending');
+          });
+        }
+      }
+    });
+  });
+
+  lastActiveIndex = idx;
+  if (meaningPanelVisible) {
+    syncMeaningPanelToPlayback(false, t);
+  }
+}
+
+async function sendLockRequest(requestId) {
+  const youtube_url = getCurrentVideoUrl();
+  const video_id = getCurrentVideoId();
+  const reqInfo = Array.isArray(lyricsRequests)
+    ? lyricsRequests.find(r => r.id === requestId || r.request === requestId || (r.aliases || []).includes(requestId))
+    : null;
+  const requestTarget = inferLockRequestTarget(reqInfo || { request: requestId });
+  try {
+    const res = await new Promise(resolve => {
+      chrome.runtime.sendMessage(
+        { type: 'SELECT_LYRICS_CANDIDATE', payload: { youtube_url, video_id, request: requestId } },
+        resolve
+      );
+    });
+    if (res?.success) {
+      showToast('歌詞を確定しました');
+      if (reqInfo) {
+        reqInfo.locked = true;
+        reqInfo.available = false;
+      }
+      const currentState = syncLyricsLockState();
+      const nextState = {
+        ...(currentState || { sync: false, dynamic: false, byRequest: {} }),
+        byRequest: { ...(currentState?.byRequest || {}) }
+      };
+      nextState.byRequest[String(requestId || '').toLowerCase()] = true;
+      if (requestTarget === 'sync') nextState.sync = true;
+      if (requestTarget === 'dynamic') nextState.dynamic = true;
+      lyricsLockState = nextState;
+      refreshLockMenu();
+    } else {
+      const msg = res?.error || (res?.raw && (res.raw.message || res.raw.code)) || '歌詞の確定に失敗しました';
+      showToast(msg);
+    }
+  } catch (e) {
+    console.error('lock request error', e);
+    showToast('歌詞の確定に失敗しました');
+  }
+}
+
+
+
+function setupPlayerBarBlankClickGuard() {
+  const bar = document.querySelector('ytmusic-player-bar');
+  if (!bar || bar.dataset.ytmBlankClickGuard === '1') return;
+  bar.dataset.ytmBlankClickGuard = '1';
+
+  // 余白クリックがプレイヤーの開閉に繋がるのを防ぐ（ボタン/スライダー等は通常通り動かす）
+  bar.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t || typeof t.closest !== 'function') return;
+
+    // インタラクティブ要素は通す（閉じるボタンの逆三角もここに含まれる想定）
+    if (
+      t.closest('button, a, input, textarea, select, tp-yt-paper-icon-button, tp-yt-paper-button, tp-yt-paper-slider, ytmusic-like-button-renderer, ytmusic-toggle-button-renderer')
+    ) {
       return;
     }
-    ui.bg = createEl('div', 'ytm-custom-bg');
-    document.body.appendChild(ui.bg);
-    ui.wrapper = createEl('div', 'ytm-custom-wrapper');
-    const leftCol = createEl('div', 'ytm-custom-left-col');
-    ui.artwork = createEl('div', 'ytm-artwork-container');
-    const info = createEl('div', 'ytm-custom-info-area');
-    ui.title = createEl('div', 'ytm-custom-title');
-    ui.artist = createEl('div', 'ytm-custom-artist');
-    ui.btnArea = createEl('div', 'ytm-btn-area');
 
-    const btns = [];
-    const lyricsBtnConfig = { txt: 'Lyrics', cls: 'lyrics-btn', click: () => { } };
-    const meaningBtnConfig = { txt: '解説', cls: 'meaning-btn', click: () => toggleMeaningPanel() };
-    const summaryBtnConfig = { txt: '要約', cls: 'meaning-summary-btn', click: () => showMeaningSummaryPopup() };
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+}
 
-    //  PiPボタン
-    const pipBtnConfig = {
-      txt: 'PIP',
-      cls: 'icon-btn',
-      click: () => PipManager.toggle()
-    };
+const tick = async () => {
+  if (document.querySelector('.ad-interrupting') || document.querySelector('.ad-showing')) return;
 
-    const replayBtnConfig = {
-      txt: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/></svg>',
-      cls: 'icon-btn',
-      click: () => {
-        if (!ui.replayPanel) {
-          createReplayPanel();
-        }
-        ui.replayPanel.classList.add('active');
-        ReplayManager.renderUI();
-      }
-    };
+  let toggleBtn = document.getElementById('my-mode-toggle');
 
-    
-    const settingsBtnConfig = {
-      txt: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.73 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .43-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.49-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
-      cls: 'icon-btn',
-      click: async () => {
-        initSettings();
-        refreshUiLangGroup();
-        ui.settings.classList.toggle('active');
-      }
-    };
 
-    const switchBtnConfig = {
-      txt: '',
-      cls: 'icon-btn ytm-switch-icon-btn',
-      click: (ev) => setupSwitchPanel(ev.currentTarget)
-    };
+  if (!toggleBtn) {
+    const rc = document.querySelector('.right-controls-buttons');
+    if (rc) {
+      toggleBtn = createEl('button', 'my-mode-toggle', '', 'IMMERSION');
 
-    // ボタン配列に追加
-    btns.push(lyricsBtnConfig, meaningBtnConfig, summaryBtnConfig, pipBtnConfig, replayBtnConfig, switchBtnConfig, settingsBtnConfig);
 
-    btns.forEach(b => {
-      const btn = createEl('button', '', `ytm-glass-btn ${b.cls || ''}`, b.txt);
-      btn.onclick = b.click;
-      ui.btnArea.appendChild(btn);
-      if (b === lyricsBtnConfig) {
-        ui.lyricsBtn = btn;
-        setupUploadMenu(btn);
-      }
-      if (b === meaningBtnConfig) {
-        btn.id = 'ytm-meaning-btn';
-        ui.meaningBtn = btn;
-      }
-      if (b === summaryBtnConfig) {
-        btn.id = 'ytm-meaning-summary-btn';
-        ui.summaryBtn = btn;
-      }
-      if (b === switchBtnConfig) {
-        btn.id = 'ytm-switch-btn';
-        // Use the custom icon image
-        try {
-          const iconUrl = chrome.runtime.getURL('src/assets/icons/ArtistChange.png');
-          btn.innerHTML = `<img src="${iconUrl}" style="width:18px;height:18px;object-fit:contain;vertical-align:middle;" alt="ArtistChange">`;
-        } catch(_) { btn.textContent = '🔄'; }
-      }
-      if (b === settingsBtnConfig) ui.settingsBtn = btn;
-    });
+      if (config.mode) toggleBtn.classList.add('active');
 
-    ui.input = createEl('input');
-    ui.input.type = 'file';
-    ui.input.accept = '.lrc,.txt';
-    ui.input.style.display = 'none';
-    ui.input.onchange = handleUpload;
-    document.body.appendChild(ui.input);
-    info.append(ui.title, ui.artist, ui.btnArea);
-    leftCol.append(ui.artwork, info);
-    ui.lyrics = createEl('div', 'my-lyrics-container');
-    ui.meaningPanel = createEl('aside', 'ytm-meaning-panel', 'ytm-meaning-panel');
-    ui.wrapper.append(leftCol, ui.lyrics, ui.meaningPanel);
-    document.body.appendChild(ui.wrapper);
-    ensureMeaningSummaryDialog();
-    refreshMeaningUi();
-    setupAutoHideEvents();
-    setupScrollResumeEvents();
-    if(isYTMPremiumUser()) setupMovieMode(); //moviemode setup
-  }
+      toggleBtn.onclick = () => {
+        config.mode = !config.mode;
+        document.body.classList.toggle('ytm-custom-layout', config.mode);
+        if (isYTMPremiumUser()) changeIModeUIWithMovieMode(config.mode);
 
-  let lyricsLateRetryTimer = null;
-  let lyricsLateRetryKey = null;
-  const LYRICS_LATE_RETRY_DELAYS_MS = [15000, 30000];
-
-  function clearLyricsLateRetry(targetKey = null) {
-    if (targetKey && lyricsLateRetryKey && lyricsLateRetryKey !== targetKey) return;
-    if (lyricsLateRetryTimer) {
-      clearTimeout(lyricsLateRetryTimer);
-      lyricsLateRetryTimer = null;
+        toggleBtn.classList.toggle('active', config.mode);
+      };
+      rc.prepend(toggleBtn);
     }
-    lyricsLateRetryKey = null;
+  } else {
+
+    const isActive = toggleBtn.classList.contains('active');
+    if (config.mode && !isActive) toggleBtn.classList.add('active');
+    else if (!config.mode && isActive) toggleBtn.classList.remove('active');
   }
 
-  function scheduleLyricsLateRetry(meta, targetKey, attempt = 0) {
-    if (!targetKey || currentKey !== targetKey) return;
-    if (lyricsLateRetryTimer) return;
-    if (attempt >= LYRICS_LATE_RETRY_DELAYS_MS.length) return;
 
-    const delayMs = LYRICS_LATE_RETRY_DELAYS_MS[attempt];
-    lyricsLateRetryKey = targetKey;
-    lyricsLateRetryTimer = setTimeout(() => {
-      lyricsLateRetryTimer = null;
-      lyricsLateRetryKey = null;
-      if (currentKey !== targetKey) return;
-
-      const metaNow = getMetadata() || meta;
-      if (!metaNow) return;
-      const keyNow = `${metaNow.title}///${metaNow.artist}`;
-      if (keyNow !== targetKey) return;
-
-      loadLyrics(metaNow, { lateRetryAttempt: attempt + 1 });
-    }, delayMs);
+  const layout = document.querySelector('ytmusic-app-layout');
+  const isPlayerOpen = layout?.hasAttribute('player-page-open');
+  if (!config.mode || !isPlayerOpen) {
+    document.body.classList.remove('ytm-custom-layout');
+    return;
   }
+  document.body.classList.add('ytm-custom-layout');
+  initLayout();
 
-  async function loadLyrics(meta, options = {}) {
-    if (!config.deepLKey) config.deepLKey = await storage.get('ytm_deepl_key');
-    const cachedTrans = await storage.get('ytm_trans_enabled');
-    if (cachedTrans !== null && cachedTrans !== undefined) config.useTrans = cachedTrans;
 
-    const cachedSharedTrans = await storage.get('ytm_shared_trans_enabled');
-    if (cachedSharedTrans !== null && cachedSharedTrans !== undefined) config.useSharedTranslateApi = cachedSharedTrans;
-    const mainLangStored = await storage.get('ytm_main_lang');
-    const subLangStored = await storage.get('ytm_sub_lang');
-    if (mainLangStored) config.mainLang = mainLangStored;
-    if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
-    const uiLangStored = await storage.get('ytm_ui_lang');
-    if (uiLangStored) config.uiLang = uiLangStored;
-    const lrclibFallbackStored = await storage.get('ytm_lrclib_fallback');
-    if (lrclibFallbackStored !== null) config.useLrcLibFallback = lrclibFallbackStored;
-    const animatedCaptionStored = await storage.get('ytm_animated_captions_enabled');
-    if (animatedCaptionStored !== null && animatedCaptionStored !== undefined) config.useAnimatedCaptions = !!animatedCaptionStored;
+  setupPlayerBarBlankClickGuard();
+  (function patchSliders() {
+    const sliders = document.querySelectorAll('ytmusic-player-bar .middle-controls tp-yt-paper-slider');
+    sliders.forEach(s => {
+      try {
+        s.style.boxSizing = 'border-box';
+        s.style.paddingLeft = '20px';
+        s.style.paddingRight = '20px';
+        s.style.minWidth = '0';
+        s.style.cursor = 'pointer';
+      } catch (e) { }
+    });
+  })();
 
-    const thisKey = `${meta.title}///${meta.artist}`;
-    if (thisKey !== currentKey) return;
-    let cached = await storage.get(thisKey);
+  const meta = getMetadata();
+  if (!meta) return;
+  const key = `${meta.title}///${meta.artist}`;
+
+  if (currentKey !== key) {
+    // クラウド同期
+    if (currentKey !== null && CloudSync && typeof CloudSync.syncNow === 'function') {
+      CloudSync.syncNow();
+    }
+
+    const v = document.querySelector('video');
+    const currentTime = v ? v.currentTime : 0;
+    const duration = v ? v.duration : 0;
+
+
+    if (currentTime < 5 || (duration > 0 && Math.abs(duration - currentTime) < 5)) {
+      timeOffset = 0;
+    } else {
+      timeOffset = currentTime;
+    }
+
+    if (!config.saveSyncOffset) {
+      if (isFirstSongDetected) {
+        isFirstSongDetected = false;
+      } else {
+        const offsetInput = document.getElementById('sync-offset-input');
+        if (offsetInput) {
+          offsetInput.value = 0;
+        }
+        config.syncOffset = 0;
+        storage.set('ytm_sync_offset', 0);
+      }
+    } else {
+      isFirstSongDetected = false;
+    }
+
+    clearLyricsLateRetry();
+
+    currentKey = key;
+    lyricsData = [];
     dynamicLines = null;
     duetSubDynamicLines = null;
     _duetExcludedTimes = new Set();
-    duetSubLyricsRaw = '';
     lyricsCandidates = null;
     selectedCandidateId = null;
     lyricsRequests = null;
@@ -4157,783 +4920,41 @@ function renderSettingsPanel() {
     lyricsLockState = null;
     lyricsTranslationMap = {};
     setLyricsMeaningData(null);
-    let data = null;
-    let noLyricsCached = false;
-    if (cached !== null && cached !== undefined) {
-      if (cached === NO_LYRICS_SENTINEL) {
-        noLyricsCached = true;
-      } else if (typeof cached === 'string') {
-        data = cached;
-      } else if (typeof cached === 'object') {
-        if (config.useAnimatedCaptions && typeof cached.animated_lyrics === 'string' && cached.animated_lyrics.trim()) {
-          data = cached.animated_lyrics;
-        } else if (typeof cached.lyrics === 'string') {
-          data = cached.lyrics;
-        }
-        if (Array.isArray(cached.dynamicLines)) dynamicLines = cached.dynamicLines;
-        if (typeof cached.subLyrics === 'string') duetSubLyricsRaw = cached.subLyrics;
-        if (cached.noLyrics) noLyricsCached = true;
-        if (Array.isArray(cached.candidates)) lyricsCandidates = cached.candidates;
-        if (Array.isArray(cached.requests)) lyricsRequests = cached.requests;
-        if (cached.config) lyricsConfig = cached.config;
-        if (cached.lockState && typeof cached.lockState === 'object') lyricsLockState = cached.lockState;
-        if (cached.lrcMap || cached.translations) {
-          lyricsTranslationMap = {
-            ...normalizeTranslationsToLrcMapLocal(cached.lrcMap),
-            ...normalizeTranslationsToLrcMapLocal(cached.translations)
-          };
-        }
-        if (cached.meaningData) setLyricsMeaningData(cached.meaningData);
-      }
+    hideMeaningSummaryPopup();
+    lastActiveIndex = -1;
+    lastScrolledIndex = -1;
+    isUserScrolling = false;
+    if (userScrollTimeout) clearTimeout(userScrollTimeout);
+    isProgrammaticScrolling = false;
+    if (programmaticScrollTimeout) clearTimeout(programmaticScrollTimeout);
+    if (programmaticScrollMaxTimeout) clearTimeout(programmaticScrollMaxTimeout);
+    lastTimeForChars = -1;
+
+    if (ui.queuePanel && ui.queuePanel.classList.contains('visible')) {
+      QueueManager.onSongChanged();
     }
-    syncLyricsLockState();
+
+    updateMetaUI(meta);
+    preferLyricsDefault(key);
+
+    // PIPウィンドウのメタデータと歌詞表示をリセット
+    if (PipManager) {
+      PipManager.updateMeta(meta.title, meta.artist);
+      PipManager.resetLyrics(); // ここで歌詞を一旦消す
+    }
+
     refreshCandidateMenu();
     refreshLockMenu();
-    // Always fetch fresh data from URL as requested
-    let gotLyrics = false;
-    try {
-        const track = meta.title.replace(/\s*[\(-\[].*?[\)-]].*/, '');
-        const artist = meta.artist;
-        const youtube_url = getCurrentVideoUrl();
-        const video_id = getCurrentVideoId();
-        const translate_to = getRequestedLrchubTranslateLangs();
-        const payload = { track, artist, youtube_url, video_id, use_lrclib: config.useLrcLibFallback };
-        if (translate_to.length) payload.translate_to = translate_to;
-        const res = await new Promise(resolve => {
-          chrome.runtime.sendMessage(
-            { type: 'GET_LYRICS', payload },
-            resolve
-          );
-        });
-        console.log('[CS] GET_LYRICS response:', res);
-        lyricsRequests = Array.isArray(res?.requests) ? res.requests : null;
-        lyricsConfig = res?.config || null;
-        syncLyricsLockState();
-        lyricsCandidates = Array.isArray(res?.candidates) ? res.candidates : null;
-        lyricsTranslationMap = {
-          ...(lyricsTranslationMap || {}),
-          ...normalizeTranslationsToLrcMapLocal(res?.lrcMap),
-          ...normalizeTranslationsToLrcMapLocal(res?.translations)
-        };
-        refreshCandidateMenu();
-        refreshLockMenu();
-        const nextMeaningData = normalizeMeaningPayloadLocal(res);
-        if (nextMeaningData) setLyricsMeaningData(nextMeaningData);
-        if (typeof res?.subLyrics === 'string' && res.subLyrics.trim()) duetSubLyricsRaw = res.subLyrics;
-
-        const responseLyrics = typeof res?.lyrics === 'string' ? res.lyrics : '';
-        const responseAnimatedLyrics = typeof res?.animated_lyrics === 'string' ? res.animated_lyrics : '';
-        const preferredLyrics = (config.useAnimatedCaptions && responseAnimatedLyrics.trim()) ? responseAnimatedLyrics : responseLyrics;
-        if (res?.success && preferredLyrics.trim()) {
-          data = preferredLyrics;
-          gotLyrics = true;
-          if (Array.isArray(res.dynamicLines) && res.dynamicLines.length) dynamicLines = res.dynamicLines;
-          if (thisKey === currentKey) {
-            clearLyricsLateRetry(thisKey);
-            storage.set(thisKey, {
-              lyrics: responseLyrics || data,
-              animated_lyrics: responseAnimatedLyrics || null,
-              dynamicLines: dynamicLines || null,
-              noLyrics: false,
-              subLyrics: (typeof duetSubLyricsRaw === 'string' ? duetSubLyricsRaw : ''),
-              meaningData: lyricsMeaning || null,
-              candidates: lyricsCandidates || null,
-              lrcMap: lyricsTranslationMap || null,
-              requests: lyricsRequests || null,
-              config: lyricsConfig || null,
-              lockState: lyricsLockState || null
-            });
-          }
-        } else {
-
-        }
-      } catch (e) {
-        console.error('GET_LYRICS failed', e);
-      }
-      if (!gotLyrics && !data && thisKey === currentKey) {
-        storage.set(thisKey, NO_LYRICS_SENTINEL);
-        noLyricsCached = true;
-        scheduleLyricsLateRetry(meta, thisKey, options.lateRetryAttempt || 0);
-      }
-    if (thisKey !== currentKey) return;
-    if (!data) {
-      renderLyrics([]);
-      refreshCandidateMenu();
-      refreshLockMenu();
-      refreshMeaningUi();
-      return;
-    }
-    await applyLyricsText(data);
+    if (ui.lyrics) ui.lyrics.scrollTop = 0;
+    setTimeout(() => {
+      if (currentKey !== key) return;
+      const metaNow = getMetadata() || meta;
+      const keyNow = `${metaNow.title}///${metaNow.artist}`;
+      if (keyNow !== key) return;
+      loadLyrics(metaNow);
+    }, 800);
   }
-
-const optimizeLineBreaks = (text) => {
-    if (!text) return '';
-
-    const segmenter = new Intl.Segmenter('ja', { granularity: 'word' });
-    const segments = Array.from(segmenter.segment(text));
-
-    let html = '';
-    let buffer = '';
-
-    const rules = {
-      suffixes: new Set([
-        'て', 'に', 'を', 'は', 'が', 'の', 'へ', 'と', 'も', 'で', 'や', 'し', 'から', 'より', 'だけ', 'まで', 'こそ', 'さえ', 'でも', 'など', 'なら', 'くらい', 'ぐらい', 'ばかり',
-        'ね', 'よ', 'な', 'さ', 'わ', 'ぞ', 'ぜ', 'かしら', 'かな', 'かも', 'だし', 'もん', 'もの',
-        'って', 'けど', 'けれど', 'のに', 'ので', 'から', 'ため', 'よう', 'こと', 'もの', 'わけ', 'ほう', 'ところ', 'とおり',
-        'た', 'だ', 'ない', 'たい', 'ます', 'ません', 'う', 'よう', 'れる', 'られる', 'せる', 'させる', 'ん', 'ず',
-        'てた', 'てる', 'ちゃう', 'じゃん', 'なきゃ', 'なくちゃ', 'く', 'き', 'けれ', 'れば',
-        'った', 'たら', 'たり',
-        'か', 'かい', 'だい', 'いる', 'ある', 'くる', 'いく', 'みる', 'おく', 'しまう', 'ほしい', 'あげる', 'くれる', 'もらう',
-        '、', '。', '，', '．', '…', '・', '！', '？', '!', '?', '~', '～', '“', '”', '‘', '’', ')', ']', '}', '」', '』', '】', '）'
-      ]),
-
-      isEnglish: (w) => /^[a-zA-Z0-9'\-\.,!?:;]+$/.test(w),
-      isSpace: (w) => /^\s+$/.test(w),
-      isOpenParen: (w) => /^[\(\[\{「『（【]$/.test(w),
-      hasKanji: (w) => /[\u4E00-\u9FFF]/.test(w),
-      isHiragana: (w) => /^[\u3040-\u309F\u30FC]+$/.test(w),
-      isKatakana: (w) => /^[\u30A0-\u30FF\u30FC]+$/.test(w),
-      startsWithSmallKana: (w) => /^[\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085\u3087\u308E\u3095\u3096]/.test(w)
-    };
-
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      const word = seg.segment;
-      const next = segments[i + 1];
-
-      buffer += word;
-
-      if (!next) {
-        html += `<span class="lyric-phrase">${buffer}</span>`;
-        break;
-      }
-
-      const nextWord = next.segment;
-      let shouldMerge = false;
-
-      if (rules.startsWithSmallKana(nextWord)) {
-        shouldMerge = true;
-      }
-      else if (rules.suffixes.has(nextWord)) {
-         if (!rules.isOpenParen(nextWord)) {
-           shouldMerge = true;
-         }
-      }
-
-      else if (rules.hasKanji(word) && rules.isHiragana(nextWord)) {
-        shouldMerge = true;
-      }
-      else if (rules.isKatakana(word) && rules.isKatakana(nextWord)) {
-        shouldMerge = true;
-      }
-      else if ((rules.isEnglish(word) || rules.isSpace(word)) && 
-               (rules.isEnglish(nextWord) || rules.isSpace(nextWord))) {
-        shouldMerge = true;
-      }
-
-      if (shouldMerge) {
-        continue;
-      }
-
-      html += `<span class="lyric-phrase">${buffer}</span>`;
-      buffer = '';
-    }
-
-    return html;
-  };    
-  function renderLyrics(data) {
-    if (!ui.lyrics) return;
-    document.body.classList.remove('ytm-animated-caption-mode');
-    animatedCaptionFrameKey = '';
-    ui.lyrics.innerHTML = '';
-    ui.lyrics.scrollTop = 0;
-    const hasData = Array.isArray(data) && data.length > 0;
-    document.body.classList.toggle('ytm-no-lyrics', !hasData);
-    document.body.classList.toggle('ytm-has-timestamp', hasTimestamp);
-    document.body.classList.toggle('ytm-no-timestamp', !hasTimestamp);
-
-    const fragment = document.createDocumentFragment();
-    const usedMainDynamicIndices = new Set();
-    const usedSubDynamicIndices = new Set();
-
-    data.forEach((line, index) => {
-      const row = createEl('div', '', 'lyric-line');
-
-      if (line && line.duetSide === 'right') {
-        row.classList.add('sub-vocal');
-      } else if (line && line.duetSide === 'left') {
-        row.classList.add('main-vocal');
-      }
-
-      if (line && typeof line === 'object') {
-        line._dynamicRenderStartSec = null;
-        line._dynamicRenderEndSec = null;
-      }
-
-      if (typeof line.time === 'number') {
-        row.dataset.startTime = String(line.time);
-      }
-
-      const mainSpan = createEl('span', '', 'lyric-main');
-
-      // dynamic lyrics highlighting
-      let dyn = null;
-      
-      // サブボーカル(right)にはduetSubDynamicLinesを使用、メインにはdynamicLinesを使用
-      if (line && line.duetSide === 'right') {
-        // サブボーカル用のdynamic lines（sub.txtがDynamic LRC形式の場合）
-        if (duetSubDynamicLines && Array.isArray(duetSubDynamicLines) && duetSubDynamicLines.length) {
-          if (typeof line.time === 'number') {
-             dyn = findDynamicLineForRender(line, duetSubDynamicLines, usedSubDynamicIndices);
-          }
-        } else if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
-          // sub.txtが通常LRC形式の場合、メインのDynamic LRCからコンテンツマッチで1文字同期データを取得
-          // → サブボーカル右側も1文字ハイライトに対応（5秒の許容幅+内容一致で検索）
-          if (typeof line.time === 'number') {
-            dyn = findDynamicLineByContent(line, dynamicLines);
-          }
-        }
-      } else {
-        // メインボーカル用のdynamic lines
-        if (dynamicLines && Array.isArray(dynamicLines) && dynamicLines.length) {
-          if (typeof line.time === 'number') {
-             // 時間で検索
-             dyn = findDynamicLineForRender(line, dynamicLines, usedMainDynamicIndices);
-          } else {
-             // デュエットモード以外のみインデックスフォールバックを使用
-             const isDuetMode = document.body.classList.contains('ytm-duet-mode');
-             if (!isDuetMode) {
-                dyn = dynamicLines[index];
-             }
-          }
-        }
-      }
-
-      if (line && typeof line === 'object' && dyn) {
-        const dynStartSec = getDynamicLineStartSec(dyn);
-        const dynEndSec = getDynamicLineEndSec(dyn);
-        line._dynamicRenderStartSec = typeof dynStartSec === 'number' ? dynStartSec : (
-          typeof line.time === 'number' ? line.time : null
-        );
-        line._dynamicRenderEndSec = typeof dynEndSec === 'number' ? dynEndSec : null;
-
-        if (typeof line._dynamicRenderStartSec === 'number') {
-          row.dataset.dynamicStartTime = String(line._dynamicRenderStartSec);
-        }
-        if (typeof line._dynamicRenderEndSec === 'number') {
-          row.dataset.dynamicEndTime = String(line._dynamicRenderEndSec);
-        }
-      }
-      
-      if (dyn && Array.isArray(dyn.chars) && dyn.chars.length) {
-        dyn.chars.forEach((ch, ci) => {
-          const chSpan = createEl('span', '', 'lyric-char');
-          // Preserve spaces
-          const cc = (ch.c === '\t') ? ' ' : ch.c;
-          chSpan.textContent = (cc === ' ') ? '\u00A0' : cc;
-          chSpan.dataset.charIndex = String(ci);
-          if (typeof ch.t === 'number') {
-            chSpan.dataset.time = String(ch.t / 1000);
-          }
-          chSpan.classList.add('char-pending');
-          mainSpan.appendChild(chSpan);
-        });
-      } else {
-        const rawText = line ? line.text : '';
-        mainSpan.innerHTML = optimizeLineBreaks(rawText);
-      }
-      row.appendChild(mainSpan);
-      
-      if (line && line.translation) {
-        const subSpan = createEl('span', '', 'lyric-translation', line.translation);
-        row.appendChild(subSpan);
-        row.classList.add('has-translation');
-      }
-
-      row.onclick = () => {
-        if (meaningPanelVisible && line && typeof line.time === 'number') {
-          syncMeaningPanelToPlayback(true, line.time);
-        }
-        if (!hasTimestamp || !line || line.time == null) return;
-        const v = document.querySelector('video');
-        if (v) v.currentTime = line.time + timeOffset;
-      };
-      fragment.appendChild(row);
-    });
-
-    ui.lyrics.appendChild(fragment);
-
-    if (PipManager.pipWindow && PipManager.pipLyricsContainer) {
-      PipManager.pipLyricsContainer.innerHTML = ui.lyrics.innerHTML;
-      if (PipManager.pipWindow.document) {
-        PipManager.pipWindow.document.body.classList.toggle('ytm-no-timestamp', !hasTimestamp);
-      }
-    }
-  }
-
-  const handleUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file || !currentKey) return;
-    const r = new FileReader();
-    r.onload = (ev) => {
-      storage.set(currentKey, ev.target.result);
-      currentKey = null;
-    };
-    r.readAsText(file);
-    e.target.value = '';
-  };
-
-
-  function startLyricRafLoop() {
-    if (lyricRafId) cancelAnimationFrame(lyricRafId);
-
-    const loop = () => {
-      const v = document.querySelector('video');
-
-      if (v) {
-
-        if (PipManager.pipWindow) {
-          PipManager.updatePlayState(v.paused);
-        }
-
-        if (v.readyState > 0 && !v.paused && !v.ended) {
-          let t = v.currentTime;
-          const duration = v.duration || 1;
-
-          if (timeOffset > 0 && t < timeOffset) timeOffset = 0;
-          t = Math.max(0, t - timeOffset);
-          t = Math.min(Math.max(0, t + (config.syncOffset / 1000)), v.duration);
-          if (animatedCaptionData && config.useAnimatedCaptions) {
-            updateAnimatedCaptionStage(t);
-          }
-          if (!animatedCaptionData && lyricsData.length && hasTimestamp) {
-            updateLyricHighlight(t);
-          }
-
-
-          if (PipManager.pipWindow && PipManager.progressRing) {
-            const radius = 32;
-            const circumference = radius * 2 * Math.PI;
-            const progress = t / duration;
-            const offset = circumference - (progress * circumference);
-            PipManager.progressRing.style.strokeDashoffset = offset;
-          }
-        }
-      }
-
-      if (PipManager.pipWindow) {
-        lyricRafId = PipManager.pipWindow.requestAnimationFrame(loop);
-      } else {
-        lyricRafId = requestAnimationFrame(loop);
-      }
-    };
-
-    lyricRafId = requestAnimationFrame(loop);
-  }
-
-  let lastScrolledIndex = -1;
-  let isUserScrolling = false;
-  let userScrollTimeout = null;
-  let isProgrammaticScrolling = false;
-  let programmaticScrollTimeout = null;
-  let programmaticScrollMaxTimeout = null;
-
-  function updateLyricHighlight(currentTime) {
-    if (!lyricsData.length) return;
-    if (!hasTimestamp) return;
-
-    const t = currentTime;
-
-    let idx = -1;
-    let startSearch = Math.max(0, lastActiveIndex);
-
-    // 再生時間が前回の位置より大幅に戻っている場合は最初から検索
-    if (startSearch >= lyricsData.length || (startSearch > 0 && lyricsData[startSearch].time > t + 0.5)) {
-      startSearch = 0;
-    }
-
-    for (let i = startSearch; i < lyricsData.length; i++) {
-      if (lyricsData[i].time > t) {
-        idx = i - 1;
-        break;
-      }
-      if (i === lyricsData.length - 1) idx = i;
-    }
-
-
-
-    const targets = [];
-    if (ui.lyrics) targets.push(ui.lyrics);
-    if (PipManager.pipWindow && PipManager.pipLyricsContainer) {
-      targets.push(PipManager.pipLyricsContainer);
-    }
-
-    const activeIndices = new Set();
-    if (idx >= 0 && idx < lyricsData.length) {
-      activeIndices.add(idx);
-
-      const currentLineTime = lyricsData[idx]?.time;
-      if (typeof currentLineTime === 'number') {
-        for (let i = idx - 1; i >= 0; i--) {
-          if (!isSameTimestamp(lyricsData[i]?.time, currentLineTime)) break;
-          activeIndices.add(i);
-        }
-        for (let i = idx + 1; i < lyricsData.length; i++) {
-          if (!isSameTimestamp(lyricsData[i]?.time, currentLineTime)) break;
-          activeIndices.add(i);
-        }
-      }
-
-      if (activeIndices.size === 1) {
-        const prevIdx = (idx > 0 && idx < lyricsData.length &&
-          typeof lyricsData[idx]?.time === 'number' &&
-          typeof lyricsData[idx - 1]?.time === 'number' &&
-          (lyricsData[idx].time - lyricsData[idx - 1].time) <= 1.0
-        ) ? (idx - 1) : -1;
-
-        if (prevIdx >= 0) {
-          // デュエットモードでduetSideが異なる行（メイン⇔サブ）は追加しない
-          // （1文字追跡タイムスタンプ時にサブボーカルがダブる原因になるため）
-          const currentSide = lyricsData[idx]?.duetSide;
-          const prevSide = lyricsData[prevIdx]?.duetSide;
-          const isDifferentDuetSide = currentSide && prevSide && currentSide !== prevSide;
-          if (!isDifferentDuetSide) {
-            const currentText = normalizeLyricCompareTextStrict(lyricsData[idx]?.text);
-            const prevText = normalizeLyricCompareTextStrict(lyricsData[prevIdx]?.text);
-            const sameDisplayedLyric = !!currentText && !!prevText && scoreLyricTextMatch(currentText, prevText) >= 100;
-            if (!sameDisplayedLyric) activeIndices.add(prevIdx);
-          }
-        }
-      }
-
-      lyricsData.forEach((line, lineIndex) => {
-        if (activeIndices.has(lineIndex)) return;
-        if (!isLineDynamicallyActiveAtTime(line, t)) return;
-        activeIndices.add(lineIndex);
-      });
-
-      if (activeIndices.size > 1) {
-        const activeList = Array.from(activeIndices).sort((a, b) => a - b);
-        activeList.forEach((activeIdx) => {
-          const activeLine = lyricsData[activeIdx];
-          if (activeLine?.duetSide !== 'right') return;
-
-          const activeText = normalizeLyricCompareTextStrict(activeLine?.text);
-          if (!activeText) return;
-
-          const hasMatchingLeft = activeList.some((otherIdx) => {
-            if (otherIdx === activeIdx) return false;
-            const otherLine = lyricsData[otherIdx];
-            if (otherLine?.duetSide !== 'left') return false;
-            // Dynamic LRC（1文字同期）の場合は行の開始時刻が最大5秒ずれる可能性があるため
-            // 許容幅を動的に切り替える（通常LRCはDUET_DUPLICATE_TOLERANCE=1.0sのまま）
-            const dedupeTol = (Array.isArray(dynamicLines) && dynamicLines.length > 0)
-              ? 5.0
-              : DUET_DUPLICATE_TOLERANCE;
-            if (!isSameTimestamp(otherLine?.time, activeLine?.time, dedupeTol)) return false;
-
-            const otherText = normalizeLyricCompareTextStrict(otherLine?.text);
-            return !!otherText && scoreLyricTextMatch(otherText, activeText) >= 100;
-          });
-
-          if (hasMatchingLeft) {
-            activeIndices.delete(activeIdx);
-          }
-        });
-      }
-    }
-
-    targets.forEach(container => {
-      const rows = container.querySelectorAll('.lyric-line');
-      if (rows.length === 0) return;
-
-      rows.forEach((r, i) => {
-        const isActive = activeIndices.has(i);
-        const isPrimary = (i === idx);
-
-        if (isActive) {
-          if (!r.classList.contains('active')) {
-            r.classList.add('active');
-          }
-
-          if (isPrimary && !isUserScrolling && idx !== lastScrolledIndex) {
-            if (container === ui.lyrics) {
-              // 【通常再生画面】
-              // getBoundingClientRect を使って要素の絶対位置から確実なスクロール量を計算
-              const containerRect = container.getBoundingClientRect();
-              const rRect = r.getBoundingClientRect();
-              const targetScroll = container.scrollTop + rRect.top - containerRect.top - (container.clientHeight / 2) + (rRect.height / 2);
-              
-              isProgrammaticScrolling = true;
-              clearTimeout(programmaticScrollTimeout);
-              clearTimeout(programmaticScrollMaxTimeout);
-              programmaticScrollTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 150);
-              programmaticScrollMaxTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 1200);
-
-              container.scrollTo({ top: targetScroll, behavior: 'smooth' });
-              
-              lastScrolledIndex = idx;
-              ReplayManager.incrementLyricCount();
-            } else {
-              // 【PIP（小窓）】
-              const containerRect = container.getBoundingClientRect();
-              const rRect = r.getBoundingClientRect();
-              const targetScroll = container.scrollTop + rRect.top - containerRect.top - (container.clientHeight * 0.35) + (rRect.height / 2);
-              
-              isProgrammaticScrolling = true;
-              clearTimeout(programmaticScrollTimeout);
-              clearTimeout(programmaticScrollMaxTimeout);
-              programmaticScrollTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 150);
-              programmaticScrollMaxTimeout = setTimeout(() => { isProgrammaticScrolling = false; }, 1200);
-
-              container.scrollTo({ top: targetScroll, behavior: 'smooth' });
-              
-              lastScrolledIndex = idx;
-            }
-          }
-
-          if (r.classList.contains('has-translation')) {
-            r.classList.add('show-translation');
-          }
-
-          const charSpans = r.querySelectorAll('.lyric-char');
-          if (charSpans.length > 0) {
-            charSpans.forEach(sp => {
-              const tt = parseFloat(sp.dataset.time || '0');
-              if (Number.isFinite(tt) && tt <= t) {
-                sp.classList.add('char-active');
-                sp.classList.remove('char-pending');
-              } else {
-                sp.classList.remove('char-active');
-                sp.classList.add('char-pending');
-              }
-            });
-          }
-        } else {
-          r.classList.remove('active');
-          r.classList.remove('show-translation');
-
-          const charSpans = r.querySelectorAll('.lyric-char');
-          if (charSpans.length > 0) {
-            charSpans.forEach(sp => {
-              sp.classList.remove('char-active');
-              sp.classList.add('char-pending');
-            });
-          }
-        }
-      });
-    });
-
-    lastActiveIndex = idx;
-    if (meaningPanelVisible) {
-      syncMeaningPanelToPlayback(false, t);
-    }
-  }
-
-  async function sendLockRequest(requestId) {
-    const youtube_url = getCurrentVideoUrl();
-    const video_id = getCurrentVideoId();
-    const reqInfo = Array.isArray(lyricsRequests)
-      ? lyricsRequests.find(r => r.id === requestId || r.request === requestId || (r.aliases || []).includes(requestId))
-      : null;
-    const requestTarget = inferLockRequestTarget(reqInfo || { request: requestId });
-    try {
-      const res = await new Promise(resolve => {
-        chrome.runtime.sendMessage(
-          { type: 'SELECT_LYRICS_CANDIDATE', payload: { youtube_url, video_id, request: requestId } },
-          resolve
-        );
-      });
-      if (res?.success) {
-        showToast('歌詞を確定しました');
-        if (reqInfo) {
-          reqInfo.locked = true;
-          reqInfo.available = false;
-        }
-        const currentState = syncLyricsLockState();
-        const nextState = {
-          ...(currentState || { sync: false, dynamic: false, byRequest: {} }),
-          byRequest: { ...(currentState?.byRequest || {}) }
-        };
-        nextState.byRequest[String(requestId || '').toLowerCase()] = true;
-        if (requestTarget === 'sync') nextState.sync = true;
-        if (requestTarget === 'dynamic') nextState.dynamic = true;
-        lyricsLockState = nextState;
-        refreshLockMenu();
-      } else {
-        const msg = res?.error || (res?.raw && (res.raw.message || res.raw.code)) || '歌詞の確定に失敗しました';
-        showToast(msg);
-      }
-    } catch (e) {
-      console.error('lock request error', e);
-      showToast('歌詞の確定に失敗しました');
-    }
-  }
-
-
-
-  function setupPlayerBarBlankClickGuard() {
-    const bar = document.querySelector('ytmusic-player-bar');
-    if (!bar || bar.dataset.ytmBlankClickGuard === '1') return;
-    bar.dataset.ytmBlankClickGuard = '1';
-
-    // 余白クリックがプレイヤーの開閉に繋がるのを防ぐ（ボタン/スライダー等は通常通り動かす）
-    bar.addEventListener('click', (e) => {
-      const t = e.target;
-      if (!t || typeof t.closest !== 'function') return;
-
-      // インタラクティブ要素は通す（閉じるボタンの逆三角もここに含まれる想定）
-      if (
-        t.closest('button, a, input, textarea, select, tp-yt-paper-icon-button, tp-yt-paper-button, tp-yt-paper-slider, ytmusic-like-button-renderer, ytmusic-toggle-button-renderer')
-      ) {
-        return;
-      }
-
-      e.preventDefault();
-      e.stopPropagation();
-    }, true);
-  }
-
-  const tick = async () => {
-  if (document.querySelector('.ad-interrupting') || document.querySelector('.ad-showing')) return;
-
-    let toggleBtn = document.getElementById('my-mode-toggle');
-
-
-    if (!toggleBtn) {
-      const rc = document.querySelector('.right-controls-buttons');
-      if (rc) {
-        toggleBtn = createEl('button', 'my-mode-toggle', '', 'IMMERSION');
-
-
-        if (config.mode) toggleBtn.classList.add('active');
-
-        toggleBtn.onclick = () => {
-          config.mode = !config.mode;
-          document.body.classList.toggle('ytm-custom-layout', config.mode);
-          if(isYTMPremiumUser()) changeIModeUIWithMovieMode(config.mode);
-
-          toggleBtn.classList.toggle('active', config.mode);
-        };
-        rc.prepend(toggleBtn);
-      }
-    } else {
-
-      const isActive = toggleBtn.classList.contains('active');
-      if (config.mode && !isActive) toggleBtn.classList.add('active');
-      else if (!config.mode && isActive) toggleBtn.classList.remove('active');
-    }
-
-
-    const layout = document.querySelector('ytmusic-app-layout');
-    const isPlayerOpen = layout?.hasAttribute('player-page-open');
-    if (!config.mode || !isPlayerOpen) {
-      document.body.classList.remove('ytm-custom-layout');
-      return;
-    }
-    document.body.classList.add('ytm-custom-layout');
-    initLayout();
-
-
-    setupPlayerBarBlankClickGuard();
-    (function patchSliders() {
-      const sliders = document.querySelectorAll('ytmusic-player-bar .middle-controls tp-yt-paper-slider');
-      sliders.forEach(s => {
-        try {
-          s.style.boxSizing = 'border-box';
-          s.style.paddingLeft = '20px';
-          s.style.paddingRight = '20px';
-          s.style.minWidth = '0';
-          s.style.cursor = 'pointer';
-        } catch (e) { }
-      });
-    })();
-
-    const meta = getMetadata();
-    if (!meta) return;
-    const key = `${meta.title}///${meta.artist}`;
-
-    if (currentKey !== key) {
-      // クラウド同期
-      if (currentKey !== null && CloudSync && typeof CloudSync.syncNow === 'function') {
-        CloudSync.syncNow();
-      }
-
-      const v = document.querySelector('video');
-      const currentTime = v ? v.currentTime : 0;
-      const duration = v ? v.duration : 0;
-
-
-      if (currentTime < 5 || (duration > 0 && Math.abs(duration - currentTime) < 5)) {
-        timeOffset = 0;
-      } else {
-        timeOffset = currentTime;
-      }
-
-      if (!config.saveSyncOffset) {
-        if (isFirstSongDetected) {
-          isFirstSongDetected = false;
-        } else {
-          const offsetInput = document.getElementById('sync-offset-input');
-          if (offsetInput) {
-            offsetInput.value = 0;
-          }
-          config.syncOffset = 0;
-          storage.set('ytm_sync_offset', 0);
-        }
-      } else {
-        isFirstSongDetected = false;
-      }
-
-      clearLyricsLateRetry();
-
-      currentKey = key;
-      lyricsData = [];
-      dynamicLines = null;
-      duetSubDynamicLines = null;
-      _duetExcludedTimes = new Set();
-      lyricsCandidates = null;
-      selectedCandidateId = null;
-      lyricsRequests = null;
-      lyricsConfig = null;
-      lyricsLockState = null;
-      lyricsTranslationMap = {};
-      setLyricsMeaningData(null);
-      hideMeaningSummaryPopup();
-      lastActiveIndex = -1;
-      lastScrolledIndex = -1;
-      isUserScrolling = false;
-      if (userScrollTimeout) clearTimeout(userScrollTimeout);
-      isProgrammaticScrolling = false;
-      if (programmaticScrollTimeout) clearTimeout(programmaticScrollTimeout);
-      if (programmaticScrollMaxTimeout) clearTimeout(programmaticScrollMaxTimeout);
-      lastTimeForChars = -1;
-
-      if (ui.queuePanel && ui.queuePanel.classList.contains('visible')) {
-        QueueManager.onSongChanged();
-      }
-
-      updateMetaUI(meta);
-      preferLyricsDefault(key);
-
-      // PIPウィンドウのメタデータと歌詞表示をリセット
-      if (PipManager) {
-        PipManager.updateMeta(meta.title, meta.artist);
-        PipManager.resetLyrics(); // ここで歌詞を一旦消す
-      }
-
-      refreshCandidateMenu();
-      refreshLockMenu();
-      if (ui.lyrics) ui.lyrics.scrollTop = 0;
-      setTimeout(() => {
-        if (currentKey !== key) return;
-        const metaNow = getMetadata() || meta;
-        const keyNow = `${metaNow.title}///${metaNow.artist}`;
-        if (keyNow !== key) return;
-        loadLyrics(metaNow);
-      }, 800);
-    }
-  };
+};
 
 function updateMetaUI(meta) {
   ui.title.innerText = meta.title;
@@ -4995,71 +5016,71 @@ function updateMetaUI(meta) {
     }
   };
 
-trySetArtistLink();
+  trySetArtistLink();
 }
 
-  (async function applySavedVisualSettings() {
-    // 1. 歌詞の太さ
-    const savedWeight = await storage.get('ytm_lyric_weight');
-    if (savedWeight) {
-      config.lyricWeight = savedWeight;
-      document.documentElement.style.setProperty('--ytm-lyric-weight', savedWeight);
-    }
+(async function applySavedVisualSettings() {
+  // 1. 歌詞の太さ
+  const savedWeight = await storage.get('ytm_lyric_weight');
+  if (savedWeight) {
+    config.lyricWeight = savedWeight;
+    document.documentElement.style.setProperty('--ytm-lyric-weight', savedWeight);
+  }
 
-    // 2. 背景の明るさ
-    const savedBright = await storage.get('ytm_bg_brightness');
-    if (savedBright) {
-      config.bgBrightness = savedBright;
-      document.documentElement.style.setProperty('--ytm-bg-brightness', savedBright);
-    }
+  // 2. 背景の明るさ
+  const savedBright = await storage.get('ytm_bg_brightness');
+  if (savedBright) {
+    config.bgBrightness = savedBright;
+    document.documentElement.style.setProperty('--ytm-bg-brightness', savedBright);
+  }
 
-    // 3. 左揃えオプション
-    const leftAlignStored = await storage.get('ytm_left_align');
-    if (leftAlignStored !== null) config.leftAlignInfo = leftAlignStored;
-    document.body.classList.toggle('ytm-align-left', !!config.leftAlignInfo);
+  // 3. 左揃えオプション
+  const leftAlignStored = await storage.get('ytm_left_align');
+  if (leftAlignStored !== null) config.leftAlignInfo = leftAlignStored;
+  document.body.classList.toggle('ytm-align-left', !!config.leftAlignInfo);
 
-    // 4. Apple Music風背景オプション
-    const appleBgStored = await storage.get('ytm_apple_bg');
-    if (appleBgStored !== null) config.appleBg = appleBgStored;
-    document.body.classList.toggle('ytm-apple-bg', !!config.appleBg);
-  })();
-  
-  
-  // ===================== 初期化 =====================
-
-  ReplayManager.init();
-  QueueManager.init();
-  CloudSync.init();
-
-  console.log('YTM Immersion loaded.');
+  // 4. Apple Music風背景オプション
+  const appleBgStored = await storage.get('ytm_apple_bg');
+  if (appleBgStored !== null) config.appleBg = appleBgStored;
+  document.body.classList.toggle('ytm-apple-bg', !!config.appleBg);
+})();
 
 
-  const setupObserver = () => {
+// ===================== 初期化 =====================
 
-    const targetNode = document.querySelector('ytmusic-player-bar');
+ReplayManager.init();
+QueueManager.init();
+CloudSync.init();
 
-
-    if (!targetNode) {
-      setTimeout(setupObserver, 500);
-      return;
-    }
+console.log('YTM Immersion loaded.');
 
 
-    const observer = new MutationObserver(() => {
+const setupObserver = () => {
 
-      tick();
-    });
-
+  const targetNode = document.querySelector('ytmusic-player-bar');
 
 
-    observer.observe(targetNode, {
-      attributes: true,
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
+  if (!targetNode) {
+    setTimeout(setupObserver, 500);
+    return;
+  }
 
-    console.log('YTM Immersion: Zero-delay observer started.');
+
+  const observer = new MutationObserver(() => {
 
     tick();
-  };
+  });
+
+
+
+  observer.observe(targetNode, {
+    attributes: true,
+    childList: true,
+    subtree: true,
+    characterData: true
+  });
+
+  console.log('YTM Immersion: Zero-delay observer started.');
+
+  tick();
+};
