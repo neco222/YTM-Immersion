@@ -4034,6 +4034,11 @@ function escHtml(s) {
 }
 
 function initLayout() {
+  const existingWrapper = document.getElementById('ytm-custom-wrapper');
+  if (existingWrapper && !ui.wrapper) {
+    existingWrapper.remove();
+    document.getElementById('ytm-custom-bg')?.remove();
+  }
 
   if (document.getElementById('ytm-custom-wrapper')) {
     ui.wrapper = document.getElementById('ytm-custom-wrapper');
@@ -4048,6 +4053,10 @@ function initLayout() {
     ui.summaryBtn = document.getElementById('ytm-meaning-summary-btn');
     ui.meaningSummaryBackdrop = document.getElementById('ytm-meaning-summary-backdrop');
     ui.meaningSummaryDialog = document.getElementById('ytm-meaning-summary-dialog');
+    ui.lyricsBtn = ui.btnArea ? ui.btnArea.querySelector('.lyrics-btn') : null;
+    ui.settingsBtn = document.getElementById('ytm-settings-btn');
+    ui.uploadMenu = document.getElementById('ytm-upload-menu');
+    ui.deleteDialog = document.getElementById('ytm-delete-dialog');
     setupAutoHideEvents();
     refreshMeaningUi();
     return;
@@ -4130,7 +4139,10 @@ function initLayout() {
         btn.innerHTML = `<img src="${iconUrl}" style="width:18px;height:18px;object-fit:contain;vertical-align:middle;" alt="ArtistChange">`;
       } catch (_) { btn.textContent = '🔄'; }
     }
-    if (b === settingsBtnConfig) ui.settingsBtn = btn;
+    if (b === settingsBtnConfig) {
+      btn.id = 'ytm-settings-btn';
+      ui.settingsBtn = btn;
+    }
   });
 
   ui.input = createEl('input');
