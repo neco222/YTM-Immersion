@@ -197,7 +197,7 @@
             setTimeout(() => {
               try {
                 if (!panel.matches(':hover') && !trigger.matches(':hover')) {
-                  panel.classList.remove('visible');
+                  closePanel(true);
                 }
               } catch (e) { }
             }, 0);
@@ -210,25 +210,32 @@
       const openPanel = () => {
         clearTimeout(leaveTimer);
         panel.classList.add('visible');
+        this.startObserver();
         this.syncQueue();
       };
-      const closePanel = () => {
+      const closePanel = (immediate = false) => {
         if (this.pinned) return;
-        leaveTimer = setTimeout(() => {
+        const action = () => {
           panel.classList.remove('visible');
-        }, 300);
+          this.stopObserver();
+        };
+        if (immediate) {
+          clearTimeout(leaveTimer);
+          action();
+        } else {
+          clearTimeout(leaveTimer);
+          leaveTimer = setTimeout(action, 300);
+        }
       };
 
       trigger.addEventListener('mouseenter', openPanel);
       panel.addEventListener('mouseenter', () => clearTimeout(leaveTimer));
-      panel.addEventListener('mouseleave', closePanel);
+      panel.addEventListener('mouseleave', () => closePanel(false));
       trigger.addEventListener('mouseleave', () => {
         setTimeout(() => {
-          if (!panel.matches(':hover')) closePanel();
+          if (!panel.matches(':hover')) closePanel(false);
         }, 100);
       });
-
-      this.startObserver();
     },
 
     onSongChanged: function () {
@@ -242,6 +249,8 @@
       });
     },
 
+    _isObserving: false,
+
     startObserver: function () {
       const originalQueue = document.querySelector('ytmusic-player-queue');
       if (originalQueue && !this.observer) {
@@ -250,11 +259,21 @@
             this.syncQueue();
           }
         });
+      }
+      if (originalQueue && this.observer && !this._isObserving) {
         this.observer.observe(originalQueue, {
           childList: true,
           subtree: true,
           attributes: true
         });
+        this._isObserving = true;
+      }
+    },
+
+    stopObserver: function () {
+      if (this.observer && this._isObserving) {
+        this.observer.disconnect();
+        this._isObserving = false;
       }
     },
 
