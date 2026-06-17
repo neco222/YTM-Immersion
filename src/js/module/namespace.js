@@ -56,6 +56,7 @@
       // ホバー検出
       progressBar.addEventListener('mouseenter', () => {
         isHovering = true;
+        startHandleLoop();
       });
 
       progressBar.addEventListener('mouseleave', () => {
@@ -66,6 +67,7 @@
       progressBar.addEventListener('mousedown', () => {
         positionChanged = true;
         isDragging = true;
+        startHandleLoop();
       });
 
       // マウスアップでドラッグ終了
@@ -87,24 +89,24 @@
       };
 
       // ハンドルの位置を更新
+      let _handleRafId = null;
       const updateHandlePosition = () => {
+        _handleRafId = null;
+
         if (!document.body.classList.contains('ytm-custom-layout')) {
           customHandle.style.opacity = '0';
-          requestAnimationFrame(updateHandlePosition);
-          return;
-        }
-
-        // ネイティブのsliderKnobを取得
-        const sliderKnob = progressBar.querySelector('#sliderKnob');
-        if (!sliderKnob) {
-          requestAnimationFrame(updateHandlePosition);
           return;
         }
 
         // 表示条件をチェック
         if (!shouldShowHandle()) {
           customHandle.style.opacity = '0';
-          requestAnimationFrame(updateHandlePosition);
+          return;
+        }
+
+        // ネイティブのsliderKnobを取得
+        const sliderKnob = progressBar.querySelector('#sliderKnob');
+        if (!sliderKnob) {
           return;
         }
 
@@ -130,10 +132,18 @@
           customHandle.style.height = '12px';
         }
 
-        requestAnimationFrame(updateHandlePosition);
+        // 表示中のみ次フレームをスケジュール
+        if (shouldShowHandle()) {
+          _handleRafId = requestAnimationFrame(updateHandlePosition);
+        }
       };
 
-      requestAnimationFrame(updateHandlePosition);
+      // 必要な時だけRAFループを開始するヘルパー
+      const startHandleLoop = () => {
+        if (!_handleRafId) {
+          _handleRafId = requestAnimationFrame(updateHandlePosition);
+        }
+      };
 
     };
 
@@ -158,7 +168,8 @@
     leftAlignInfo: false,
     appleBg: true,
     useAnimatedCaptions: false,
-    useLrcLibFallback: true
+    useLrcLibFallback: true,
+    lowCpuMode: false
   };
 
   // フォールバック言語
@@ -194,7 +205,12 @@
       settings_sync_offset_save: "曲が切り替わったときにオフセットをリセットしない",
       settings_left_align: "タイトルとアーティスト名を左揃えにする",
       settings_apple_bg: "Apple Music風の動的背景を使用する",
-      settings_animated_captions: "アニメーション字幕を使う"
+      settings_animated_captions: "アニメーション字幕を使う",
+      settings_low_cpu_mode: "軽量モード (背景アニメーション停止 / 高パフォーマンス)",
+      settings_sec_display: "表示とレイアウト",
+      settings_sec_bg: "背景エフェクト & パフォーマンス",
+      settings_sec_lyrics: "歌詞スタイル & アニメーション",
+      settings_sec_data_source: "データ & 歌詞ソース"
     },
     en: {
       unit_hour: "hours",
@@ -227,7 +243,12 @@
       settings_sync_offset_save: "Don't reset offset when the song changes",
       settings_left_align: "Left align title and artist name",
       settings_apple_bg: "Use Apple Music style dynamic background",
-      settings_animated_captions: "Enable animated captions"
+      settings_animated_captions: "Enable animated captions",
+      settings_low_cpu_mode: "Lightweight Mode (Stop background animation / High performance)",
+      settings_sec_display: "Display & Layout",
+      settings_sec_bg: "Background & Performance",
+      settings_sec_lyrics: "Lyrics & Animations",
+      settings_sec_data_source: "Data & Lyrics Source"
     },
     ko: {
       unit_hour: "시간",
@@ -257,7 +278,12 @@
       settings_reset: "초기화",
       settings_saved: "설정을 저장했습니다",
       settings_sync_offset: "가사 동기 오프셋",
-      settings_sync_offset_save: "곡이 바뀌어도 오프셋을 초기화하지 않기"
+      settings_sync_offset_save: "곡이 바뀌어도 오프셋을 초기화하지 않기",
+      settings_low_cpu_mode: "경량 모드 (배경 애니메이션 정지 / 고성능)",
+      settings_sec_display: "표시 및 레이아웃",
+      settings_sec_bg: "배경 그래픽 및 성능",
+      settings_sec_lyrics: "가사 스타일 및 애니메이션",
+      settings_sec_data_source: "데이터 및 가사 소스"
     },
     zh: {
       unit_hour: "小时",
@@ -287,7 +313,12 @@
       settings_reset: "重置",
       settings_saved: "已保存设置",
       settings_sync_offset: "歌词同步偏移",
-      settings_sync_offset_save: "切歌时不重置偏移"
+      settings_sync_offset_save: "切歌时不重置偏移",
+      settings_low_cpu_mode: "轻量模式 (停止背景动画 / 高性能)",
+      settings_sec_display: "显示与布局",
+      settings_sec_bg: "背景效果与性能",
+      settings_sec_lyrics: "歌词样式与动画",
+      settings_sec_data_source: "数据与歌词源"
     }
   }; 
   
